@@ -1,0 +1,16 @@
+[package]
+name = "worlde-automaton"
+description = "Solve worlde puzzles"
+authors = ["Paul Horn <developer@knutwalker.de>"]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+homepage = "https://gh.knutwalker.io/worlde-solvers/"
+repository = "https://github.com/knutwalker/worlde-solvers/"
+readme = "README.md"
+categories = ["science"]
+keywords = ["wordle", "puzzle", "solver"]
+
+[dependencies]
+fst = "0.4.7"

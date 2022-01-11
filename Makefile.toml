@@ -1,0 +1,73 @@
+[tasks.ci]
+workspace = false
+run_task = { name = "ci-flow", fork = true }
+
+[tasks.readme]
+workspace = false
+command = "cargo"
+args = ["readme", "--project-root", "crates/wordle-solvers", "--input", "src/main.rs", "--template", "${PWD}/README.tpl", "--output", "${PWD}/README.md"]
+
+[tasks.t]
+workspace = false
+run_task = { name = "test", fork = true }
+
+[tasks.r]
+workspace = false
+run_task = "readme"
+
+[tasks.outdated]
+args = ["outdated", "--root-deps-only", "--exit-code", "0"]
+
+[tasks.build-mac-universal]
+workspace = false
+dependencies = ["shasum-mac-universal"]
+
+[tasks.build-mac-x86_64]
+workspace = false
+command = "cargo"
+args = ["build", "--release", "--target=x86_64-apple-darwin"]
+
+[tasks.build-mac-aarch64]
+workspace = false
+command = "cargo"
+args = ["build", "--release", "--target=aarch64-apple-darwin"]
+
+[tasks.create-mac-universal-target]
+workspace = false
+command = "mkdir"
+args = ["-p", "target/universal-apple-darwin"]
+
+[tasks.bundle-mac-universal]
+workspace = false
+command = "lipo"
+args = [
+    "target/x86_64-apple-darwin/release/${CARGO_MAKE_BINARY_EXECUTABLE_NAME}",
+    "target/aarch64-apple-darwin/release/${CARGO_MAKE_BINARY_EXECUTABLE_NAME}",
+    "-create",
+    "-output",
+    "target/universal-apple-darwin/${CARGO_MAKE_BINARY_EXECUTABLE_NAME}-universal-apple-darwin"
+]
+dependencies = [
+    "build-mac-x86_64",
+    "build-mac-aarch64",
+    "create-mac-universal-target"
+]
+
+[tasks.zip-mac-universal]
+workspace = false
+command = "tar"
+args = [
+    "czcf",
+    "target/universal-apple-darwin/${CARGO_MAKE_BINARY_EXECUTABLE_NAME}-universal-apple-darwin.tar.gz",
+    "target/universal-apple-darwin/${CARGO_MAKE_BINARY_EXECUTABLE_NAME}-universal-apple-darwin"
+]
+dependencies = [ "bundle-mac-universal" ]
+
+[tasks.shasum-mac-universal]
+workspace = false
+script = '''
+pushd target/universal-apple-darwin
+shasum -b -a 256 ${CARGO_MAKE_BINARY_EXECUTABLE_NAME}-universal-apple-darwin.tar.gz > ${CARGO_MAKE_BINARY_EXECUTABLE_NAME}-universal-apple-darwin.sha256
+popd
+'''
+dependencies = [ "zip-mac-universal" ]
