@@ -57,3 +57,6 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+# Don't ignore the .github folder or the .gitattributes file
+!.github
+!.gitattributes
