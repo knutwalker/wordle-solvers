@@ -11,7 +11,7 @@ based on the feedback that the game provides.
 
 ```rust
 use fst::{IntoStreamer, Set, Streamer};
-use worlde_automaton::WordleBuilder;
+use wordle_automaton::WordleBuilder;
 
 // // Build an FST from a word list - we use some random words
 let set = fst::Set::from_iter(&["crush", "morty", "party", "solid"]).unwrap();
@@ -139,7 +139,7 @@ pub struct Wordle {
 
 const _: () = assert!(
     std::mem::size_of::<Wordle>() == 28,
-    "Worlde should be 28 bytes"
+    "Wordle should be 28 bytes"
 );
 
 impl Wordle {

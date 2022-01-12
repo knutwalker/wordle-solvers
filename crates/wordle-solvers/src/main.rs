@@ -40,7 +40,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
-use worlde_automaton::WordleBuilder;
+use wordle_automaton::WordleBuilder;
 
 fn main() -> Result<()> {
     let opts = parse_opts();
