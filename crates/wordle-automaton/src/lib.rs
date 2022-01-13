@@ -16,8 +16,8 @@ use wordle_automaton::WordleBuilder;
 // // Build an FST from a word list - we use some random words
 let set = fst::Set::from_iter(&["crush", "morty", "party", "solid"]).unwrap();
 
-// Create an empty Wordle
-let wordle = WordleBuilder::new().build();
+// Create an empty Wordle with support for 5 letter words
+let wordle = WordleBuilder::<5>::new().build();
 
 // Search with the current Wordle
 let mut stream = set.search(wordle.clone()).into_stream();
@@ -117,34 +117,29 @@ assert_eq!(solution.decode_str(), String::from("party"));
 )]
 
 use fst::Automaton;
-use std::num::NonZeroU32;
+use std::num::NonZeroUsize;
 
-pub mod types;
+mod types;
 
-use types::{Constraint, Letter, LetterList, LetterSet};
+pub use types::{Constraint, Letter, LetterList, LetterSet};
 
 /// An automaton that matches valid guesses
 #[allow(missing_copy_implementations)]
 #[derive(Clone, Debug)]
-pub struct Wordle {
+pub struct Wordle<const N: usize> {
     never: LetterSet,
-    eventually: LetterList,
-    positions: [Constraint; 5],
+    eventually: LetterList<N>,
+    positions: [Constraint; N],
 }
 
-const _: () = assert!(
-    std::mem::size_of::<Wordle>() == 28,
-    "Wordle should be 28 bytes"
-);
-
-impl Wordle {
+impl<const N: usize> Wordle<N> {
     /// Create a new automaton without any constraints
     #[must_use]
     pub const fn new() -> Self {
         Self {
             never: LetterSet::new(),
             eventually: LetterList::new(),
-            positions: [Constraint::new(); 5],
+            positions: [Constraint::new(); N],
         }
     }
 
@@ -169,14 +164,11 @@ impl Wordle {
     /// # Panics
     ///
     /// Panics if the automaton does not have a solution, i.e. [`Wordle::is_solved()`] must return `true`
-    pub fn decode(self) -> impl Iterator<Item = u8> {
-        let mut ev = LetterList::new();
-        for pos in self.positions {
-            assert!(!pos.is_free(), "Trying to decode an unsolved wordle");
-            ev = ev.add(pos.must_letter());
-        }
-
-        ev.iter().map(u8::from)
+    pub fn decode(&self) -> impl Iterator<Item = u8> + '_ {
+        self.positions.iter().map(|cons| {
+            assert!(!cons.is_free(), "Trying to decode an unsolved wordle");
+            u8::from(cons.must_letter())
+        })
     }
 
     /// Create a new string from the full solution
@@ -185,7 +177,7 @@ impl Wordle {
     ///
     /// Panics if the automaton does not have a solution, i.e. [`Wordle::is_solved()`] must return `true`
     #[must_use]
-    pub fn decode_str(self) -> String {
+    pub fn decode_str(&self) -> String {
         self.decode().map(char::from).collect()
     }
 }
@@ -196,12 +188,12 @@ impl Wordle {
 ///
 /// ```rust
 /// # use wordle_automaton::WordleBuilder;
-/// let wordle = WordleBuilder::new().never_all(b"nope").correct_pos(1, b'f').wrong_pos(2, b'x').build();
+/// let wordle = WordleBuilder::<5>::new().never_all(b"nope").correct_pos(1, b'f').wrong_pos(2, b'x').build();
 /// ```
 #[derive(Clone, Debug)]
-pub struct WordleBuilder(Wordle);
+pub struct WordleBuilder<const N: usize>(Wordle<N>);
 
-impl WordleBuilder {
+impl<const N: usize> WordleBuilder<N> {
     /// Create a new builder without any constraints
     #[must_use]
     pub const fn new() -> Self {
@@ -209,8 +201,9 @@ impl WordleBuilder {
     }
 
     /// Create a new builder based on existing constraints
+    #[allow(clippy::missing_const_for_fn)] // cannot be const because of union
     #[must_use]
-    pub const fn from(mut wordle: Wordle) -> Self {
+    pub fn from(mut wordle: Wordle<N>) -> Self {
         wordle.eventually = LetterList::new();
         Self(wordle)
     }
@@ -249,13 +242,13 @@ impl WordleBuilder {
     /// This is equivalent to the yellow result in the game
     pub fn wrong_pos(&mut self, pos: usize, letter: u8) -> &mut Self {
         let letter = Letter::new(letter);
-        self.0.eventually = self.0.eventually.add(letter);
+        self.0.eventually.add(letter);
         self.0.positions[pos] = self.0.positions[pos].must_not(letter);
         self
     }
 
     /// Build the final automaton for the added constraints
-    pub fn build(&mut self) -> Wordle {
+    pub fn build(&mut self) -> Wordle<N> {
         let mut wordle = std::mem::replace(&mut self.0, Wordle::new());
 
         // if we signal something as 'never' but it's also green or yellow somewhere, we must
@@ -283,48 +276,44 @@ impl WordleBuilder {
     ///
     /// The automaton may not be in a valid state, i.e. should not be used to search in an FST
     #[must_use]
-    pub const fn current(&self) -> &Wordle {
+    pub const fn current(&self) -> &Wordle<N> {
         &self.0
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 #[doc(hidden)]
-pub struct SolveState {
-    pos: NonZeroU32,
-    eventually: LetterList,
+pub struct SolveState<const N: usize> {
+    pos: NonZeroUsize,
+    eventually: LetterList<N>,
 }
 
 const _: () = assert!(
-    std::mem::size_of::<SolveState>() == 8,
-    "SolveState should be 8 bytes"
-);
-const _: () = assert!(
-    std::mem::size_of::<Option<SolveState>>() == 8,
+    std::mem::size_of::<Option<SolveState<5>>>() == std::mem::size_of::<SolveState<5>>(),
     "SolveState should have a niche"
 );
 
-impl Automaton for Wordle {
-    type State = Option<SolveState>;
+impl<const N: usize> Automaton for Wordle<N> {
+    type State = Option<SolveState<N>>;
 
     fn start(&self) -> Self::State {
         Some(SolveState {
-            pos: NonZeroU32::new(1).unwrap(),
-            eventually: self.eventually,
+            pos: NonZeroUsize::new(1).unwrap(),
+            eventually: self.eventually.clone(),
         })
     }
 
     fn is_match(&self, state: &Self::State) -> bool {
-        state.map_or(false, |s| s.pos.get() == 6)
+        state.as_ref().map_or(false, |s| s.pos.get() - 1 == N)
     }
 
     fn accept(&self, state: &Self::State, byte: u8) -> Self::State {
         // we are already a non-match
-        let state = (*state)?;
+        let state = state.as_ref()?;
 
         // cannot match past 5 letters
-        let pos = state.pos.get();
-        if pos == 6 {
+        let pos = state.pos.get() - 1;
+        if pos == N {
             return None;
         }
 
@@ -336,23 +325,22 @@ impl Automaton for Wordle {
             return None;
         }
 
-        let current_pos = (pos - 1) as usize;
-
-        let slot = self.positions[current_pos];
+        let constraint = self.positions[pos];
         // letter is not possible in the current position
-        if !slot.accept(letter) {
+        if !constraint.accept(letter) {
             return None;
         }
 
         // check if the letter is one that we eventually need to add
-        let (removed, eventually) = state.eventually.remove(letter);
+        let mut state = state.clone();
+        let removed = state.eventually.remove(letter);
         if !removed {
             // need to check that we have enough free slots to eventually fill those
-            let need_to_fill = eventually.len();
-            let available = self.positions[current_pos + 1..]
+            let need_to_fill = state.eventually.len();
+            let available = self.positions[pos + 1..]
                 .iter()
-                .map(|p| u32::from(p.is_free()))
-                .sum::<u32>();
+                .map(|p| usize::from(p.is_free()))
+                .sum::<usize>();
 
             // there are not enough slots to eventually fill all undecided ones
             if available < need_to_fill {
@@ -360,8 +348,9 @@ impl Automaton for Wordle {
             }
         }
 
-        let pos = NonZeroU32::new(pos + 1).expect("Adding one to any value cannot be zero");
-        Some(SolveState { pos, eventually })
+        // adding 1 because we store 1-based, adding another one to actually advance
+        state.pos = NonZeroUsize::new(pos + 2).expect("Adding to non-zero value is non-zero");
+        Some(state)
     }
 
     fn can_match(&self, state: &Self::State) -> bool {
@@ -477,12 +466,12 @@ mod tests {
     }
 
     fn test_fst<'a>(
-        wordle: Wordle,
+        wordle: Wordle<5>,
         words: impl IntoIterator<Item = &'a str>,
         expected: &[&'a str],
     ) {
         fn inner_test<'a>(
-            wordle: Wordle,
+            wordle: Wordle<5>,
             words: impl IntoIterator<Item = &'a str>,
             expected: &[&'a str],
         ) -> fst::Result<()> {

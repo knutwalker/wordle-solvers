@@ -33,7 +33,7 @@
 
 use clap::{App, Arg};
 use eyre::{Result, WrapErr};
-use fst::{IntoStreamer, Map, Streamer};
+use fst::{Automaton, IntoStreamer, Map, Streamer};
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
@@ -42,18 +42,42 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use wordle_automaton::{types::Letter, WordleBuilder};
+use wordle_automaton::{Letter, Wordle, WordleBuilder};
+
+const MAX_SIZE: usize = 16;
 
 fn main() -> Result<()> {
     let opts = parse_opts();
-    let words = load_word_list(
+    match opts.size.0 {
+        1 => run::<1>(&opts),
+        2 => run::<2>(&opts),
+        3 => run::<3>(&opts),
+        4 => run::<4>(&opts),
+        5 => run::<5>(&opts),
+        6 => run::<6>(&opts),
+        7 => run::<7>(&opts),
+        8 => run::<8>(&opts),
+        9 => run::<9>(&opts),
+        10 => run::<10>(&opts),
+        11 => run::<11>(&opts),
+        12 => run::<12>(&opts),
+        13 => run::<13>(&opts),
+        14 => run::<14>(&opts),
+        15 => run::<15>(&opts),
+        16 => run::<16>(&opts),
+        otherwise => panic!("Unsupported size: {}", otherwise),
+    }
+}
+
+fn run<const N: usize>(opts: &Opts) -> Result<()> {
+    let words = load_word_list::<N>(
         &opts.word_list,
         opts.block_list.as_deref(),
         opts.no_tiered,
         opts.sort,
     )?;
-    let fsts = build_fsts(words)?;
-    let solution = solve(&fsts, opts.penalty.0)?;
+    let fsts = build_fsts(words, opts.penalty.0)?;
+    let solution = solve::<N>(&fsts)?;
     match solution {
         Solution::None => println!("Could not find a solution"),
         Solution::Quit => {}
@@ -73,6 +97,7 @@ struct Opts {
     sort: bool,
     penalty: Penalty,
     no_tiered: bool,
+    size: Size,
 }
 
 #[derive(Debug)]
@@ -87,6 +112,23 @@ impl FromStr for Penalty {
                 Ok(Self(1.0 - f))
             } else {
                 Err(String::from("The value must be in [0..1]"))
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct Size(usize);
+
+impl FromStr for Size {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<usize>().map_err(|e| e.to_string()).and_then(|s| {
+            if (1..=MAX_SIZE).contains(&s) {
+                Ok(Self(s))
+            } else {
+                Err(format!("The value must be in [1..{}]", MAX_SIZE))
             }
         })
     }
@@ -165,6 +207,13 @@ fn parse_opts() -> Opts {
                     "This has the same behavior as `--penalty 0`, but might be faster",
                 ))
                 .long("no-tiered"),
+        ).arg(
+            Arg::new("size")
+                .help("word size")
+                .short('s')
+                .long("size")
+                .validator(str::parse::<usize>) // todo: limit size
+                .default_value("5"),
         )
         .get_matches();
 
@@ -173,6 +222,7 @@ fn parse_opts() -> Opts {
     let sort = matches.is_present("sort");
     let penalty = matches.value_of_t("penalty").unwrap();
     let no_tiered = matches.is_present("no-tiered");
+    let size = matches.value_of_t("size").unwrap();
 
     Opts {
         word_list,
@@ -180,6 +230,7 @@ fn parse_opts() -> Opts {
         sort,
         penalty,
         no_tiered,
+        size,
     }
 }
 
@@ -189,13 +240,18 @@ struct Words {
     letter_frequency: HashMap<u8, u64>,
 }
 
-fn clean_word_list<I>(words: I, block_list: &HashSet<String>, merge: bool, sort: bool) -> Words
+fn clean_word_list<I, const N: usize>(
+    words: I,
+    block_list: &HashSet<String>,
+    merge: bool,
+    sort: bool,
+) -> Words
 where
     I: IntoIterator,
     I::Item: Into<String> + AsRef<str>,
 {
-    fn valid_word(word: &str) -> bool {
-        (word.len() == 5 || word.len() == 4) && word.bytes().all(|b| matches!(b, b'a'..=b'z'))
+    fn valid_word<const N: usize>(word: &str) -> bool {
+        (word.len() == N || word.len() == N - 1) && word.bytes().all(|b| matches!(b, b'a'..=b'z'))
     }
 
     fn has_no_duplicate_letters(word: &str) -> bool {
@@ -225,9 +281,9 @@ where
             }
         }
 
-        if valid_word(word_ref) && !block_list.contains(word_ref) {
+        if valid_word::<N>(word_ref) && !block_list.contains(word_ref) {
             let word: String = word.into();
-            if word.len() == 4 {
+            if word.len() == N - 1 {
                 let _ = possible_stems.insert(word);
             } else {
                 let idx = possible_words.len();
@@ -240,7 +296,8 @@ where
     }
 
     let is_singular = move |(idx, word): (usize, String)| {
-        (!(possible_plurals.contains(&idx) && possible_stems.contains(&word[..4]))).then(|| word)
+        (!(possible_plurals.contains(&idx) && possible_stems.contains(&word[..N - 1])))
+            .then(|| word)
     };
 
     let (mut different_letters, mut duplicate_letters) = possible_words
@@ -261,7 +318,7 @@ where
     }
 }
 
-fn load_word_list(
+fn load_word_list<const N: usize>(
     file: &Path,
     block_list: Option<&Path>,
     merge: bool,
@@ -284,7 +341,7 @@ fn load_word_list(
         .transpose()
         .wrap_err("The block list could not be read.")?;
 
-    Ok(clean_word_list(
+    Ok(clean_word_list::<_, N>(
         lines.lines().map_while(Result::ok),
         &block_list.unwrap_or_default(),
         merge,
@@ -303,9 +360,8 @@ fn build_fsts(
         duplicate_letters,
         letter_frequency,
     }: Words,
+    penalty: f64,
 ) -> Result<Fsts> {
-    // TODO: assumes sorted input. Could fallback to sort if from_iter fails
-
     let score = move |s: &str| -> u64 {
         s.bytes()
             .map(|b| letter_frequency.get(&b).copied().unwrap_or_default())
@@ -316,13 +372,21 @@ fn build_fsts(
         let score = score(&s);
         (s, score)
     }))
-    .wrap_err("The input file must be sorted.")?;
+    .wrap_err("The input file must be sorted. Try adding --sort.")?;
 
     let duplicate_letters = Map::from_iter(duplicate_letters.into_iter().map(|s| {
         let score = score(&s);
+        // score and penalty are both bound in a way that will not run into those issues
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            clippy::cast_sign_loss
+        )]
+        let score = ((score as f64) * penalty) as u64;
+
         (s, score)
     }))
-    .wrap_err("The input file must be sorted.")?;
+    .wrap_err("The input file must be sorted. Try adding --sort.")?;
 
     Ok(Fsts {
         different_letters,
@@ -336,111 +400,188 @@ enum Solution {
     Solved(String),
 }
 
-fn solve(fsts: &Fsts, penalty: f64) -> Result<Solution> {
-    const QUIT: &str = "-- QUIT I don't want to play anymore";
+const QUIT: &str = "-- QUIT I don't want to play anymore";
 
-    let mut solutions = Vec::with_capacity(10);
-    let mut wordle = WordleBuilder::new().build();
+fn solve<const N: usize>(fsts: &Fsts) -> Result<Solution> {
+    let mut wordle = WordleBuilder::<N>::new().build();
+
+    let mut solutions =
+        Vec::with_capacity(fsts.different_letters.len() + fsts.duplicate_letters.len());
 
     loop {
-        if wordle.is_solved() {
-            return Ok(Solution::Solved(wordle.decode_str()));
+        if let Some(solution) = find_all_solutions(fsts, &wordle, &mut solutions) {
+            return Ok(solution);
         }
 
-        let mut differents = fsts.different_letters.search(&wordle).into_stream();
-        let mut duplicates = fsts.duplicate_letters.search(&wordle).into_stream();
-
-        solutions.clear();
-        while let Some((word, score)) = differents.next() {
-            solutions.push((word.to_vec(), score));
-        }
-        while let Some((word, score)) = duplicates.next() {
-            // score and penalty are both bound in a way that will not run into those issues
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_precision_loss,
-                clippy::cast_sign_loss
-            )]
-            solutions.push((word.to_vec(), ((score as f64) * penalty) as u64));
-        }
-
-        if solutions.is_empty() {
-            return Ok(Solution::None);
-        }
-
-        if solutions.len() == 1 {
-            let (word, _) = solutions.pop().unwrap();
-            let word = String::from_utf8(word).expect("input was strings");
-            return Ok(Solution::Solved(word));
-        }
-
-        solutions.sort_by_key(|(_, score)| Reverse(*score));
         eprintln!("Found {} possible solutions", solutions.len());
 
-        let mut items = &mut solutions[..];
-
-        let word = loop {
-            let mid = items.len().min(10);
-            let (current, rest) = items.split_at_mut(mid);
-
-            let mut selection = dialoguer::Select::new();
-            for (word, _) in current.iter() {
-                let word = std::str::from_utf8(word).expect("input was strings");
-                let _ = selection.item(word);
-            }
-
-            let selection = selection
-                .with_prompt("Do you want to play any of these words?")
-                .default(0)
-                .item("-- No, I want new words")
-                .item("-- No, I want to redo the current guess from the top")
-                .item(QUIT)
-                .interact()?;
-
-            match selection.checked_sub(current.len()) {
-                Some(0) => items = rest,
-                Some(1) => items = &mut solutions[..],
-                Some(_) => return Ok(Solution::Quit),
-                None => break std::mem::take(&mut current[selection]).0,
-            }
+        let word = match find_word_to_play(&wordle, &mut solutions)? {
+            Ok(word) => word,
+            Err(solution) => return Ok(solution),
         };
 
-        let mut wb = WordleBuilder::from(wordle);
-        let mut selection = 0;
+        wordle = match apply_feedback(wordle, word)? {
+            Ok(wordle) => wordle,
+            Err(solution) => return Ok(solution),
+        };
+    }
+}
 
-        for (pos, b) in word.into_iter().enumerate() {
-            if wb.current().has_solution_at(pos) {
-                eprintln!(
-                    "Letter '{}' on position {}: Green:  Correct Letter in Correct Position",
-                    char::from(b.to_ascii_uppercase()),
-                    pos + 1
-                );
-                continue;
-            }
+fn find_all_solutions<const N: usize>(
+    fsts: &Fsts,
+    wordle: &Wordle<N>,
+    buf: &mut Vec<(Vec<u8>, u64)>,
+) -> Option<Solution> {
+    if wordle.is_solved() {
+        return Some(Solution::Solved(wordle.decode_str()));
+    }
 
-            selection = dialoguer::Select::new()
-                .with_prompt(format!(
-                    "Letter '{}' on position {}",
-                    char::from(b.to_ascii_uppercase()),
-                    pos + 1
-                ))
-                .items(&[
-                    "Grey:   Wrong Letter",
-                    "Yellow: Wrong Position",
-                    "Green:  Correct Letter in Correct Position",
-                    QUIT,
-                ])
-                .default(selection)
-                .interact()?;
+    let mut differents = fsts.different_letters.search(&wordle).into_stream();
+    let mut duplicates = fsts.duplicate_letters.search(&wordle).into_stream();
 
-            let _ = match selection {
-                0 => wb.never(b),
-                1 => wb.wrong_pos(pos, b),
-                2 => wb.correct_pos(pos, b),
-                _ => return Ok(Solution::Quit),
-            };
+    buf.clear();
+
+    while let Some((word, score)) = differents.next() {
+        buf.push((word.to_vec(), score));
+    }
+    while let Some((word, score)) = duplicates.next() {
+        buf.push((word.to_vec(), score));
+    }
+
+    if buf.is_empty() {
+        return Some(Solution::None);
+    }
+
+    if buf.len() == 1 {
+        let (word, _) = buf.pop().unwrap();
+        let word = String::from_utf8(word).expect("input was strings");
+        return Some(Solution::Solved(word));
+    }
+
+    buf.sort_by_key(|(_, score)| Reverse(*score));
+
+    None
+}
+
+fn find_word_to_play<const N: usize>(
+    wordle: &Wordle<N>,
+    options: &mut [(Vec<u8>, u64)],
+) -> Result<Result<Vec<u8>, Solution>> {
+    let mut items = &mut *options;
+
+    Ok(Ok(loop {
+        let mid = items.len().min(10);
+        let (current, rest) = items.split_at_mut(mid);
+
+        let mut selection = dialoguer::Select::new();
+        for (word, _) in current.iter() {
+            let word = std::str::from_utf8(word).expect("input was strings");
+            let _ = selection.item(word);
         }
 
-        wordle = wb.build();
+        let selection = selection
+            .with_prompt("Do you want to play any of these words?")
+            .default(0)
+            .item("-- No, I want new words")
+            .item("-- No, I want to redo the current guess from the top")
+            .item("-- No, I want to manually enter a word")
+            .item(QUIT)
+            .interact()?;
+
+        match selection.checked_sub(current.len()) {
+            Some(0) => items = rest,
+            Some(1) => items = options,
+            Some(2) => {
+                let word = dialoguer::Input::new()
+                    .with_prompt("Please enter the word you want to play")
+                    .validate_with(|s: &String| {
+                        if s.len() != N {
+                            return Err(format!("The word must be {} letters long", N));
+                        }
+                        if !s.is_ascii() {
+                            return Err(String::from("The word must be in ASCII"));
+                        }
+                        Ok(())
+                    })
+                    .interact_text()?;
+
+                if !test_word(&word, wordle)
+                    && !dialoguer::Confirm::new()
+                        .with_prompt(format!(
+                            concat!(
+                                "The selected word '{}' does not match the currenct constraints. ",
+                                "Do you want to play in anyway?"
+                            ),
+                            word
+                        ))
+                        .default(false)
+                        .interact()?
+                {
+                    items = options;
+                    continue;
+                }
+
+                break word.into_bytes();
+            }
+
+            Some(_) => return Ok(Err(Solution::Quit)),
+            None => break std::mem::take(&mut current[selection]).0,
+        }
+    }))
+}
+
+fn test_word<const N: usize>(word: &str, wordle: &Wordle<N>) -> bool {
+    let mut state = wordle.start();
+    for b in word.bytes() {
+        if !wordle.can_match(&state) {
+            return false;
+        }
+        state = wordle.accept(&state, b);
     }
+    wordle.is_match(&state)
+}
+
+fn apply_feedback<const N: usize>(
+    wordle: Wordle<N>,
+    word: Vec<u8>,
+) -> Result<Result<Wordle<N>, Solution>> {
+    let mut wb = WordleBuilder::from(wordle);
+    let mut selection = 0;
+
+    for (pos, b) in word.into_iter().enumerate() {
+        if wb.current().has_solution_at(pos) {
+            eprintln!(
+                "Letter '{}' on position {}: Green:  Correct Letter in Correct Position",
+                char::from(b.to_ascii_uppercase()),
+                pos + 1
+            );
+            continue;
+        }
+
+        selection = dialoguer::Select::new()
+            .with_prompt(format!(
+                "Letter '{}' on position {}",
+                char::from(b.to_ascii_uppercase()),
+                pos + 1
+            ))
+            .items(&[
+                "Grey:   Wrong Letter",
+                "Yellow: Wrong Position",
+                "Green:  Correct Letter in Correct Position",
+                "SkIP:   Do nothing with that letter",
+                QUIT,
+            ])
+            .default(selection)
+            .interact()?;
+
+        let _ = match selection {
+            0 => wb.never(b),
+            1 => wb.wrong_pos(pos, b),
+            2 => wb.correct_pos(pos, b),
+            3 => &mut wb,
+            _ => return Ok(Err(Solution::Quit)),
+        };
+    }
+
+    Ok(Ok(wb.build()))
 }

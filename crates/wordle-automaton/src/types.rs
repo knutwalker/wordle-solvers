@@ -1,5 +1,7 @@
 //! Types and data structures to help with the automaton implementation
 
+use smallvec::SmallVec;
+
 /// A possible letter, can only be lowercase ASCII characters, i.e. [a-z]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -81,96 +83,62 @@ impl LetterSet {
     }
 }
 
-/// A list of letters with support for up to 5 entries
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A list of letters
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct LetterList(u32);
+pub struct LetterList<const N: usize>(SmallVec<[Letter; N]>);
 
-impl LetterList {
+impl<const N: usize> LetterList<N> {
     /// Create an empty list
     #[must_use]
     pub const fn new() -> Self {
-        Self(0)
+        Self(SmallVec::new_const())
     }
 
     /// Return the number of entries in this list
     #[must_use]
-    pub const fn len(self) -> u32 {
-        self.0 & 0x1F
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 
     /// Returns true iff the list is empty
     #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     /// Adds a letter in O(1)
     ///
     /// # Panics
     /// Panic if the list is full
-    #[must_use]
-    pub const fn add(self, letter: Letter) -> Self {
-        let len = self.len() + 1;
-        debug_assert!(len <= 5, "maximum capacity of 5 is reached");
-        Self((letter.0 as u32 + 1) << (5 * len) | (self.0 & !0x1F) | len)
+    pub fn add(&mut self, letter: Letter) {
+        self.0.push(letter);
     }
 
     /// Removes a letter by comparing the value in O(n)
     ///
     /// Returns (true, newList) if item was in this list, otherwise returns (false, self)
     #[must_use]
-    pub const fn remove(self, letter: Letter) -> (bool, Self) {
-        let t = letter.0 as u32 + 1;
-        let mut r = 0;
-        let mut rs = 5;
-        let mut n = self.0 >> 5;
-        while n != 0 {
-            let x = n & 0x1F;
-            n >>= 5;
-
-            if x == t {
-                return (true, Self(r | n << rs | (self.len() - 1)));
-            }
-
-            r |= x << rs;
-            rs += 5;
+    pub fn remove(&mut self, letter: Letter) -> bool {
+        if let Some(idx) = self.0.iter().position(|&l| l == letter) {
+            let _ = self.0.remove(idx);
+            true
+        } else {
+            false
         }
-
-        (false, self)
     }
 
     /// Create an iterator over all entries in this list.
     #[must_use]
-    pub const fn iter(self) -> LetterListIter {
-        LetterListIter(self.0 >> 5)
+    pub fn iter(&self) -> std::slice::Iter<'_, Letter> {
+        self.0.iter()
     }
 }
 
-/// List entry iterator. See [`LetterList::iter()`].
-#[allow(missing_copy_implementations)] // Iterators should not be copy
-#[derive(Clone, Debug)]
-pub struct LetterListIter(u32);
+impl<'a, const N: usize> IntoIterator for &'a LetterList<N> {
+    type Item = &'a Letter;
 
-impl Iterator for LetterListIter {
-    type Item = Letter;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.0 == 0 {
-            return None;
-        }
-        let x = (self.0 & 0x1F) - 1;
-        // this should never fail
-        let x = u8::try_from(x).ok()?;
-        self.0 >>= 5;
-        Some(Letter(x))
-    }
-}
-
-impl IntoIterator for LetterList {
-    type Item = Letter;
-
-    type IntoIter = LetterListIter;
+    type IntoIter = std::slice::Iter<'a, Letter>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -370,88 +338,81 @@ mod tests {
 
     #[test]
     fn test_list() {
-        let list = LetterList::new();
+        let mut list = LetterList::<5>::new();
         assert_eq!(list.len(), 0);
 
-        let list = list.add(Letter(0));
+        list.add(Letter(0));
         assert_eq!(list.len(), 1);
 
-        let list = list.add(Letter(1));
+        list.add(Letter(1));
         assert_eq!(list.len(), 2);
 
         // list semantics, not set
-        let list = list.add(Letter(0));
+        list.add(Letter(0));
         assert_eq!(list.len(), 3);
     }
 
-    fn contains(ev: LetterList, letter: Letter) -> bool {
-        ev.iter().any(|l| l == letter)
+    fn contains<const N: usize>(ev: &LetterList<N>, letter: Letter) -> bool {
+        ev.iter().any(|&l| l == letter)
     }
 
     #[test]
     fn test_list_contains() {
-        let list = LetterList::new();
-        assert!(!contains(list, Letter(0)));
-        assert!(!contains(list, Letter(1)));
+        let mut list = LetterList::<5>::new();
+        assert!(!contains(&list, Letter(0)));
+        assert!(!contains(&list, Letter(1)));
 
-        let list = list.add(Letter(0));
-        assert!(contains(list, Letter(0)));
-        assert!(!contains(list, Letter(1)));
+        list.add(Letter(0));
+        assert!(contains(&list, Letter(0)));
+        assert!(!contains(&list, Letter(1)));
 
-        let list = list.add(Letter(1));
-        assert!(contains(list, Letter(0)));
-        assert!(contains(list, Letter(1)));
+        list.add(Letter(1));
+        assert!(contains(&list, Letter(0)));
+        assert!(contains(&list, Letter(1)));
 
-        let list = list.add(Letter(0));
-        assert!(contains(list, Letter(0)));
-        assert!(contains(list, Letter(1)));
+        list.add(Letter(0));
+        assert!(contains(&list, Letter(0)));
+        assert!(contains(&list, Letter(1)));
+        assert_eq!(list.len(), 3);
     }
 
     #[test]
     fn test_list_remove() {
-        let list = LetterList::new();
-        let (removed, _) = list.remove(Letter(0));
+        let mut list = LetterList::<5>::new();
+        let removed = list.remove(Letter(0));
         assert!(!removed);
 
-        let list = list.add(Letter(0));
-        let (removed, list2) = list.remove(Letter(0));
+        list.add(Letter(0));
+        let removed = list.remove(Letter(0));
         assert!(removed);
-        assert!(contains(list, Letter(0)));
-        assert!(!contains(list2, Letter(0)));
+        assert!(!contains(&list, Letter(0)));
 
-        let list = list.add(Letter(1));
-        let (removed, list2) = list.remove(Letter(1));
+        list.add(Letter(0));
+        list.add(Letter(1));
+        let removed = list.remove(Letter(1));
         assert!(removed);
-        assert!(contains(list, Letter(0)));
-        assert!(contains(list, Letter(1)));
-        assert!(contains(list2, Letter(0)));
-        assert!(!contains(list2, Letter(1)));
+        assert!(contains(&list, Letter(0)));
+        assert!(!contains(&list, Letter(1)));
+        assert_eq!(list.len(), 1);
 
-        let list = list.add(Letter(0));
-        let (removed, list2) = list.remove(Letter(0));
+        list.add(Letter(1));
+        list.add(Letter(0));
+        let removed = list.remove(Letter(0));
         assert!(removed);
-        assert!(contains(list, Letter(0)));
-        assert!(contains(list, Letter(1)));
-        assert!(contains(list2, Letter(0)));
-        assert!(contains(list2, Letter(1)));
+        assert!(contains(&list, Letter(0)));
+        assert!(contains(&list, Letter(1)));
+        assert_eq!(list.len(), 2);
     }
 
     #[test]
     fn test_list_iter() {
-        let list = LetterList::new()
-            .add(Letter(0))
-            .add(Letter(1))
-            .add(Letter(2));
+        let mut list = LetterList::<5>::new();
+        list.add(Letter(0));
+        list.add(Letter(1));
+        list.add(Letter(2));
 
-        let letters = list.into_iter().collect::<Vec<_>>();
+        let letters = list.iter().copied().collect::<Vec<_>>();
         assert_eq!(letters, &[Letter(0), Letter(1), Letter(2)]);
-    }
-
-    #[test]
-    #[should_panic(expected = "maximum capacity of 5 is reached")]
-    const fn test_list_full() {
-        let list = LetterList(5);
-        let _ = list.add(Letter(0));
     }
 
     #[test]

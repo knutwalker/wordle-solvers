@@ -14,3 +14,4 @@ keywords = ["wordle", "puzzle", "solver"]
 
 [dependencies]
 fst = "0.4.7"
+smallvec = {version = "1.7.0", features = [ "const_generics", "const_new", "union" ] }
