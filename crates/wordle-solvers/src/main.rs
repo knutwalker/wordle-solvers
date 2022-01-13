@@ -497,7 +497,7 @@ fn apply_feedback<const N: usize>(
     let mut selection = 0;
 
     for (pos, b) in word.into_iter().enumerate() {
-        if wb.current().has_solution_at(pos) {
+        if wb.current().solution_at(pos) == Some(b) {
             eprintln!(
                 "Letter '{}' on position {}: Green:  Correct Letter in Correct Position",
                 char::from(b.to_ascii_uppercase()),
@@ -516,7 +516,8 @@ fn apply_feedback<const N: usize>(
                 "Grey:   Wrong Letter",
                 "Yellow: Wrong Position",
                 "Green:  Correct Letter in Correct Position",
-                "SkIP:   Do nothing with that letter",
+                "??:     Correct Letter but unknown Position",
+                "SKIP:   Do nothing with that letter",
                 QUIT,
             ])
             .default(selection)
@@ -526,7 +527,8 @@ fn apply_feedback<const N: usize>(
             0 => wb.never(b),
             1 => wb.wrong_pos(pos, b),
             2 => wb.correct_pos(pos, b),
-            3 => &mut wb,
+            3 => wb.eventually(b),
+            4 => &mut wb,
             _ => return Ok(Err(Solution::Quit)),
         };
     }

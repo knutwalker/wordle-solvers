@@ -153,10 +153,25 @@ impl<const N: usize> Wordle<N> {
     ///
     /// # Panics
     ///
-    /// Panics if the `pos` is out of bounds (5..)
+    /// Panics if the `pos` is out of bounds (N..)
     #[must_use]
     pub const fn has_solution_at(&self, pos: usize) -> bool {
         !self.positions[pos].is_free()
+    }
+
+    /// Return the solution for a single position, if available
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `pos` is out of bounds (N..)
+    #[must_use]
+    pub const fn solution_at(&self, pos: usize) -> Option<u8> {
+        let cons = self.positions[pos];
+        if cons.is_free() {
+            None
+        } else {
+            Some(cons.must_letter().into_byte())
+        }
     }
 
     /// Iterate over all bytes in the full solution
@@ -211,6 +226,9 @@ impl<const N: usize> WordleBuilder<N> {
     /// Signal that the given `letter` is never part of any solution on any position
     ///
     /// This corresponds to the darkened result is the game
+    ///
+    /// # Panics
+    /// Panics if the letter is not in [a-zA-Z]
     pub fn never(&mut self, letter: u8) -> &mut Self {
         self.0.never = self.0.never.add(Letter::new(letter));
         self
@@ -219,6 +237,9 @@ impl<const N: usize> WordleBuilder<N> {
     /// Signal that any of the given letters are never part of any solution on any position
     ///
     /// This is equivalent to calling [`WordleBuilder::never()`] on every item of the iterator
+    ///
+    /// # Panics
+    /// Panics if any of the letters is not in [a-zA-Z]
     pub fn never_all(&mut self, letters: impl AsRef<[u8]>) -> &mut Self {
         self.0.never = letters
             .as_ref()
@@ -232,6 +253,10 @@ impl<const N: usize> WordleBuilder<N> {
     /// Signal that the given letter is correct for the given position
     ///
     /// This is equivalent to the green result in the game
+    ///
+    /// # Panics
+    /// Panics if the letter is not in [a-zA-Z]
+    /// Panics if the `pos` is out of bounds (N..)
     pub fn correct_pos(&mut self, pos: usize, letter: u8) -> &mut Self {
         self.0.positions[pos] = self.0.positions[pos].must(Letter::new(letter));
         self
@@ -240,10 +265,28 @@ impl<const N: usize> WordleBuilder<N> {
     /// Signal that the given letter is in a wrong position but part of the solution
     ///
     /// This is equivalent to the yellow result in the game
+    ///
+    /// # Panics
+    /// Panics if the letter is not in [a-zA-Z]
+    /// Panics if the `pos` is out of bounds (N..)
     pub fn wrong_pos(&mut self, pos: usize, letter: u8) -> &mut Self {
         let letter = Letter::new(letter);
         self.0.eventually.add(letter);
         self.0.positions[pos] = self.0.positions[pos].must_not(letter);
+        self
+    }
+
+    /// Signal that the given letter is part of the solution
+    ///
+    /// There is no equivalent in the game. It is either a green or a yello result, without knowing
+    /// which one
+    ///
+    /// # Panics
+    /// Panics if the letter is not in [a-zA-Z]
+    pub fn eventually(&mut self, letter: u8) -> &mut Self {
+        let letter = Letter::new(letter);
+        self.0.never = self.0.never.remove(letter);
+        self.0.eventually.add(letter);
         self
     }
 
@@ -261,10 +304,12 @@ impl<const N: usize> WordleBuilder<N> {
             } else {
                 never.remove(cons.must_letter())
             };
-            // add all global nevers to the prohibited set of this constraint
-            // we need to do this _after_ the previous step
-            // otherwise we would always remove all never letters
-            *cons = cons.must_not_all(full_never);
+            if cons.is_free() {
+                // add all global nevers to the prohibited set of this constraint
+                // we need to do this _after_ the previous step
+                // otherwise we would always remove all never letters
+                *cons = cons.must_not_all(full_never);
+            }
             never
         });
 

@@ -32,11 +32,17 @@ impl Letter {
             _ => panic!("Invalid letter, only accept [a-zA-Z]"),
         }
     }
+
+    /// Return the byte representation of this letter
+    #[must_use]
+    pub const fn into_byte(self) -> u8 {
+        self.0 + b'a'
+    }
 }
 
 impl From<Letter> for u8 {
     fn from(letter: Letter) -> Self {
-        b'a' + letter.0
+        letter.into_byte()
     }
 }
 
@@ -193,13 +199,13 @@ impl Constraint {
     /// Flag a letter as invalid for this constraint
     #[must_use]
     pub const fn must_not(self, letter: Letter) -> Self {
-        Self(LetterSet(self.0).add(letter).0)
+        Self(self.must_not_letters().add(letter).0 | 1 << 31)
     }
 
     /// Flags all letters as invalid for this constraint
     #[must_use]
     pub const fn must_not_all(self, letters: LetterSet) -> Self {
-        Self(LetterSet(self.0).add_all(letters).0)
+        Self(self.must_not_letters().add_all(letters).0 | 1 << 31)
     }
 
     /// Return the letter that is known to be required
@@ -250,10 +256,10 @@ mod tests {
 
     #[test]
     fn test_letter_into() {
-        assert_eq!(u8::from(Letter::new(b'a')), b'a');
-        assert_eq!(u8::from(Letter::new(b'z')), b'z');
-        assert_eq!(u8::from(Letter::new(b'A')), b'a');
-        assert_eq!(u8::from(Letter::new(b'Z')), b'z');
+        assert_eq!(Letter::new(b'a').into_byte(), b'a');
+        assert_eq!(Letter::new(b'z').into_byte(), b'z');
+        assert_eq!(Letter::new(b'A').into_byte(), b'a');
+        assert_eq!(Letter::new(b'Z').into_byte(), b'z');
     }
 
     #[test]
@@ -470,14 +476,14 @@ mod tests {
         let cons = cons.must_not(Letter(1));
         assert!(cons.accept(Letter(0)));
         assert!(!cons.accept(Letter(1)));
-        assert!(!cons.accept(Letter(2)));
-        assert!(!cons.is_free());
+        assert!(cons.accept(Letter(2)));
+        assert!(cons.is_free());
 
         let cons = cons.must_not_all(LetterSet::new().add(Letter(1)).add(Letter(2)));
         assert!(cons.accept(Letter(0)));
         assert!(!cons.accept(Letter(1)));
         assert!(!cons.accept(Letter(2)));
-        assert!(!cons.is_free());
+        assert!(cons.is_free());
     }
 
     #[test]
