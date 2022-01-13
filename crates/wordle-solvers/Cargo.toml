@@ -2,7 +2,7 @@
 name = "wordle-solvers"
 description = "Solve a Wordle puzzle based on a provided word list"
 authors = ["Paul Horn <developer@knutwalker.de>"]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
