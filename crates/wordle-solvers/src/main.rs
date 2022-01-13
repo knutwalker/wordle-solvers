@@ -46,7 +46,12 @@ use wordle_automaton::{types::Letter, WordleBuilder};
 
 fn main() -> Result<()> {
     let opts = parse_opts();
-    let words = load_word_list(&opts.word_list, opts.block_list.as_deref(), opts.no_tiered)?;
+    let words = load_word_list(
+        &opts.word_list,
+        opts.block_list.as_deref(),
+        opts.no_tiered,
+        opts.sort,
+    )?;
     let fsts = build_fsts(words)?;
     let solution = solve(&fsts, opts.penalty.0)?;
     match solution {
@@ -65,8 +70,9 @@ fn main() -> Result<()> {
 struct Opts {
     word_list: PathBuf,
     block_list: Option<PathBuf>,
-    no_tiered: bool,
+    sort: bool,
     penalty: Penalty,
+    no_tiered: bool,
 }
 
 #[derive(Debug)]
@@ -96,8 +102,14 @@ fn parse_opts() -> Opts {
                 .takes_value(true)
                 .value_name("WORD_LIST")
                 .required(false)
-                .help("The word list to use. Must be sorted and one word per line.")
-                .long_help(None)
+                .help("The word list to use")
+                .long_help(concat!(
+                    "The word list to use. ",
+                    "The list must contain one word per line. ",
+                    "Invalid guesses (non-ascii, or non-five-letter words) are allowed ",
+                    "and will we used to build a frequency table. ",
+                    "The list must be sorted unless --sort is given."
+                ))
                 .allow_invalid_utf8(true)
                 .default_value("/usr/share/dict/words"),
         ).arg(
@@ -106,22 +118,22 @@ fn parse_opts() -> Opts {
                 .value_name("BLOCK_LIST")
                 .required(false)
                 .help("A list of block words that are known to not be accepted. Must be one word per line, only lowercase.")
-                .long_help(None)
+                .long_help(concat!(
+                    "The list of word list to never use. ",
+                    "The list must contain one word per line. ",
+                    "The word must be all-lowercase and five letters. ",
+                    "Invalid words will be ignored. ",
+                    "The list can be in any order, it does not have to be sorted."
+                ))
                 .short('b')
                 .long("block-list")
                 .allow_invalid_utf8(true),
         )
         .arg(
-            Arg::new("no-tiered")
-                .help("Merge the fst that are being searched")
-                .long_help(concat!(
-                    "Merge the fst that are being searched. ",
-                    "The default behavior is prioritize words that have no repeated characters and ",
-                    "only onclude the other words if their letters are quite frequent. ",
-                    "This flag merged both lists and searches them together. ",
-                    "This has the same behavior as `--penalty 0`, but might be faster",
-                ))
-                .long("no-tiered"),
+            Arg::new("sort")
+                .help("Make sure that the input list is sorted")
+                .short('c')
+                .long("sort"),
         )
         .arg(
             Arg::new("penalty")
@@ -142,18 +154,32 @@ fn parse_opts() -> Opts {
                 .required(false)
                 .default_value("0.5"),
         )
+        .arg(
+            Arg::new("no-tiered")
+                .help("Merge the fst that are being searched")
+                .long_help(concat!(
+                    "Merge the fst that are being searched. ",
+                    "The default behavior is prioritize words that have no repeated characters and ",
+                    "only onclude the other words if their letters are quite frequent. ",
+                    "This flag merged both lists and searches them together. ",
+                    "This has the same behavior as `--penalty 0`, but might be faster",
+                ))
+                .long("no-tiered"),
+        )
         .get_matches();
 
     let word_list = PathBuf::from(matches.value_of_os("word-list").unwrap());
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
-    let no_tiered = matches.is_present("no-tiered");
+    let sort = matches.is_present("sort");
     let penalty = matches.value_of_t("penalty").unwrap();
+    let no_tiered = matches.is_present("no-tiered");
 
     Opts {
         word_list,
         block_list,
-        no_tiered,
+        sort,
         penalty,
+        no_tiered,
     }
 }
 
@@ -163,7 +189,7 @@ struct Words {
     letter_frequency: HashMap<u8, u64>,
 }
 
-fn clean_word_list<I>(words: I, block_list: &HashSet<String>, merge: bool) -> Words
+fn clean_word_list<I>(words: I, block_list: &HashSet<String>, merge: bool, sort: bool) -> Words
 where
     I: IntoIterator,
     I::Item: Into<String> + AsRef<str>,
@@ -217,11 +243,16 @@ where
         (!(possible_plurals.contains(&idx) && possible_stems.contains(&word[..4]))).then(|| word)
     };
 
-    let (different_letters, duplicate_letters) = possible_words
+    let (mut different_letters, mut duplicate_letters) = possible_words
         .into_iter()
         .enumerate()
         .filter_map(is_singular)
-        .partition(|w| merge || has_no_duplicate_letters(w));
+        .partition::<Vec<_>, _>(|w| merge || has_no_duplicate_letters(w));
+
+    if sort {
+        different_letters.sort();
+        duplicate_letters.sort();
+    }
 
     Words {
         different_letters,
@@ -230,7 +261,12 @@ where
     }
 }
 
-fn load_word_list(file: &Path, block_list: Option<&Path>, merge: bool) -> Result<Words> {
+fn load_word_list(
+    file: &Path,
+    block_list: Option<&Path>,
+    merge: bool,
+    sort: bool,
+) -> Result<Words> {
     let lines = BufReader::new(
         File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
     );
@@ -252,6 +288,7 @@ fn load_word_list(file: &Path, block_list: Option<&Path>, merge: bool) -> Result
         lines.lines().map_while(Result::ok),
         &block_list.unwrap_or_default(),
         merge,
+        sort,
     ))
 }
 
