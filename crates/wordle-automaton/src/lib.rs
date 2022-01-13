@@ -20,20 +20,17 @@ let set = fst::Set::from_iter(&["crush", "morty", "party", "solid"]).unwrap();
 let wordle = WordleBuilder::new().build();
 
 // Search with the current Wordle
-let mut stream = set.search_with_state(wordle.clone()).into_stream();
+let mut stream = set.search(wordle.clone()).into_stream();
 
 // Select a guess from the stream
 // In the example we take the first one
-let (guess, guess_state) = stream.next().unwrap();
-// The guess is an Option<SolveState> where a None represents an invalid match
-// The fst crate should take care to not return invalid matches, so it should be safe to unwrap
-let guess_state = guess_state.unwrap();
+let guess = stream.next().unwrap();;
 
 // In the first round, the guess is the first word, since all are valid
 assert_eq!(guess, b"crush");
 
 // Present the guess to the game and gather feedback
-let mut next = WordleBuilder::from(wordle, guess_state);
+let mut next = WordleBuilder::from(wordle);
 
 // Let's say the correct word is 'party'
 
@@ -51,15 +48,14 @@ next.never_all(&guess[2..]);
 // let's try the next round
 let wordle = next.build();
 
-let mut stream = set.search_with_state(wordle.clone()).into_stream();
-let (guess, guess_state) = stream.next().unwrap();
-let guess_state = guess_state.unwrap();
+let mut stream = set.search(wordle.clone()).into_stream();
+let guess = stream.next().unwrap();
 
 // the next valid guess is 'morty' as 'crush' is eliminated, as is 'solid'
 assert_eq!(guess, b"morty");
 
 // Present the guess to the game for feedback
-let mut next = WordleBuilder::from(wordle, guess_state);
+let mut next = WordleBuilder::from(wordle);
 // 'm' and 'o' are not in 'party'
 next.never_all(&guess[..2]);
 
@@ -70,15 +66,14 @@ next.correct_pos(4, guess[4]);
 
 // Let's try the final round
 let wordle = next.build();
-let mut stream = set.search_with_state(wordle.clone()).into_stream();
-let (guess, guess_state) = stream.next().unwrap();
-let guess_state = guess_state.unwrap();
+let mut stream = set.search(wordle.clone()).into_stream();
+let guess = stream.next().unwrap();
 
 // Only 'party' remains as a candidate that fulfills all requirements
 assert_eq!(guess, b"party");
 
 // after asking the game, we can verify that we have arrived at a solution
-let mut solution = WordleBuilder::from(wordle, guess_state);
+let mut solution = WordleBuilder::from(wordle);
 solution.correct_pos(0, guess[0]);
 solution.correct_pos(1, guess[1]);
 
@@ -215,8 +210,8 @@ impl WordleBuilder {
 
     /// Create a new builder based on existing constraints
     #[must_use]
-    pub const fn from(mut wordle: Wordle, state: SolveState) -> Self {
-        wordle.eventually = state.eventually;
+    pub const fn from(mut wordle: Wordle) -> Self {
+        wordle.eventually = LetterList::new();
         Self(wordle)
     }
 
@@ -273,11 +268,8 @@ impl WordleBuilder {
     }
 }
 
-/// The state to use during automaton matching
-///
-/// Cannot be used directly, but it is returned from [`fst::Set::search_with_state`] and can be
-/// passed to [`WordleBuilder::from`] to refine a search.
 #[derive(Copy, Clone, Debug)]
+#[doc(hidden)]
 pub struct SolveState {
     pos: NonZeroU32,
     eventually: LetterList,

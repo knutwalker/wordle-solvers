@@ -239,17 +239,17 @@ fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result
         }
 
         let mut is_fallback = false;
-        let mut stream = fsts.main.search_with_state(&wordle).into_stream();
+        let mut stream = fsts.main.search(&wordle).into_stream();
 
-        let (word, state) = loop {
+        let word = loop {
             solutions.clear();
             match initial_guess.take() {
-                Some(guess) => solutions.push((guess, fst::Automaton::start(&wordle).unwrap())),
+                Some(guess) => solutions.push(guess),
                 None => {
                     while solutions.len() < solutions.capacity() {
-                        if let Some((w, Some(s))) = stream.next() {
+                        if let Some(w) = stream.next() {
                             match std::str::from_utf8(w) {
-                                Ok(word) => solutions.push((word.to_string(), s)),
+                                Ok(word) => solutions.push(word.to_string()),
                                 // this should never fail since we use strings as input
                                 Err(_) => continue,
                             }
@@ -257,7 +257,7 @@ fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result
                             break;
                         } else {
                             is_fallback = true;
-                            stream = fsts.fallback.search_with_state(&wordle).into_stream();
+                            stream = fsts.fallback.search(&wordle).into_stream();
                         };
                     }
                 }
@@ -268,7 +268,7 @@ fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result
             }
 
             let mut selection = dialoguer::Select::new();
-            for (word, _) in &solutions {
+            for word in &solutions {
                 let _ = selection.item(word);
             }
 
@@ -288,7 +288,7 @@ fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result
             }
         };
 
-        let mut wb = WordleBuilder::from(wordle, state);
+        let mut wb = WordleBuilder::from(wordle);
         let mut selection = 0;
 
         for (pos, b) in word.bytes().enumerate() {
