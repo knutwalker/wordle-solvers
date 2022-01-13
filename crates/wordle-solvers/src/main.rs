@@ -33,25 +33,29 @@
 
 use clap::{App, Arg};
 use eyre::{Result, WrapErr};
-use fst::{IntoStreamer, Set, Streamer};
+use fst::{IntoStreamer, Map, Streamer};
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 use wordle_automaton::WordleBuilder;
 
 fn main() -> Result<()> {
     let opts = parse_opts();
     let words = load_word_list(&opts.word_list, opts.block_list.as_deref(), opts.no_tiered)?;
-    let initial_guess = take_best_guess(&words.main).cloned();
     let fsts = build_fsts(words)?;
-    let solution = solve(&fsts, initial_guess)?;
+    let solution = solve(&fsts, opts.penalty.0)?;
     match solution {
         Solution::None => println!("Could not find a solution"),
         Solution::Quit => {}
-        Solution::Solved(solution) => println!("Solution: {}", solution),
+        Solution::Solved(mut solution) => {
+            solution.make_ascii_uppercase();
+            println!("Solution: {}", solution);
+        }
     }
 
     Ok(())
@@ -62,6 +66,24 @@ struct Opts {
     word_list: PathBuf,
     block_list: Option<PathBuf>,
     no_tiered: bool,
+    penalty: Penalty,
+}
+
+#[derive(Debug)]
+struct Penalty(f64);
+
+impl FromStr for Penalty {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<f64>().map_err(|e| e.to_string()).and_then(|f| {
+            if (0.0..=1.0).contains(&f) {
+                Ok(Self(1.0 - f))
+            } else {
+                Err(String::from("The value must be in [0..1]"))
+            }
+        })
+    }
 }
 
 fn parse_opts() -> Opts {
@@ -90,24 +112,48 @@ fn parse_opts() -> Opts {
                 .allow_invalid_utf8(true),
         )
         .arg(
-            clap::Arg::new("no-tiered")
+            Arg::new("no-tiered")
                 .help("Merge the fst that are being searched")
-                .long_help(concat!("Merge the fst that are being searched. ",
-    "The default behavior is to only search for word that have no repeated characters and ",
-    "only fall back to the full word list if that first one is exhausted. ",
-    "This flag merged both lists and searches them together."))
+                .long_help(concat!(
+                    "Merge the fst that are being searched. ",
+                    "The default behavior is prioritize words that have no repeated characters and ",
+                    "only onclude the other words if their letters are quite frequent. ",
+                    "This flag merged both lists and searches them together. ",
+                    "This has the same behavior as `--penalty 0`, but might be faster",
+                ))
                 .long("no-tiered"),
+        )
+        .arg(
+            Arg::new("penalty")
+                .help("Penalty for words with duplicated letters")
+                .validator(str::parse::<Penalty>)
+                .long_help(concat!(
+                    "Penalty for a waord having duplicated letters. ",
+                    "The default behavior is prioritize words that have no repeated characters and ",
+                    "only onclude the other words if their letters are quite frequent. ",
+                    "This flag controls how much penalty a score gets. ",
+                    "The penalty must be between 0 and 1, inclusive.",
+                    "A penalty of 0 means no penalty, score the same as other words.",
+                    "A penalty of 1 means to only show words with duplicates after all other results.",
+                ))
+                .short('p')
+                .long("penalty")
+                .takes_value(true)
+                .required(false)
+                .default_value("0.5"),
         )
         .get_matches();
 
     let word_list = PathBuf::from(matches.value_of_os("word-list").unwrap());
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
     let no_tiered = matches.is_present("no-tiered");
+    let penalty = matches.value_of_t("penalty").unwrap();
 
     Opts {
         word_list,
         block_list,
         no_tiered,
+        penalty,
     }
 }
 
@@ -200,21 +246,25 @@ fn load_word_list(
     ))
 }
 
-fn take_best_guess(main: &[String]) -> Option<&String> {
-    let mut freqs = HashMap::<u8, usize>::with_capacity(32);
-    for byte in main.iter().flat_map(|s| s.bytes()) {
+fn build_fsts(Pair { main, fallback }: Pair<Vec<String>>) -> Result<Pair<Map<Vec<u8>>>> {
+    // TODO: assumes sorted input. Could fallback to sort if from_iter fails
+
+    let mut freqs = HashMap::<u8, u64>::with_capacity(32);
+    for byte in main.iter().chain(fallback.iter()).flat_map(|s| s.bytes()) {
         *freqs.entry(byte).or_default() += 1;
     }
 
-    main.iter()
-        .max_by_key(|s| s.bytes().map(|b| freqs[&b]).sum::<usize>())
-}
+    let main = Map::from_iter(main.into_iter().map(|s| {
+        let score = s.as_bytes().iter().map(|b| freqs[b]).sum::<u64>();
+        (s, score)
+    }))
+    .wrap_err("The input file must be sorted.")?;
 
-fn build_fsts(Pair { main, fallback }: Pair<Vec<String>>) -> Result<Pair<Set<Vec<u8>>>> {
-    // TODO: assumes sorted input. Could fallback to sort if from_iter fails
-
-    let main = Set::from_iter(main).wrap_err("The input file must be sorted.")?;
-    let fallback = Set::from_iter(fallback).wrap_err("The input file must be sorted.")?;
+    let fallback = Map::from_iter(fallback.into_iter().map(|s| {
+        let score = s.as_bytes().iter().map(|b| freqs[b]).sum::<u64>();
+        (s, score)
+    }))
+    .wrap_err("The input file must be sorted.")?;
 
     Ok(Pair { main, fallback })
 }
@@ -225,50 +275,56 @@ enum Solution {
     Solved(String),
 }
 
-fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result<Solution> {
+fn solve(fsts: &Pair<Map<Vec<u8>>>, penalty: f64) -> Result<Solution> {
     const QUIT: &str = "-- QUIT I don't want to play anymore";
 
     let mut solutions = Vec::with_capacity(10);
     let mut wordle = WordleBuilder::new().build();
 
-    'outer: loop {
+    loop {
         if wordle.is_solved() {
-            let mut solution = wordle.decode_str();
-            solution.make_ascii_uppercase();
-            return Ok(Solution::Solved(solution));
+            return Ok(Solution::Solved(wordle.decode_str()));
         }
 
-        let mut is_fallback = false;
         let mut stream = fsts.main.search(&wordle).into_stream();
+        let mut second_stream = fsts.fallback.search(&wordle).into_stream();
+
+        solutions.clear();
+        while let Some((word, score)) = stream.next() {
+            solutions.push((word.to_vec(), score));
+        }
+        while let Some((word, score)) = second_stream.next() {
+            // score and penalty are both bound in a way that will not run into those issues
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_precision_loss,
+                clippy::cast_sign_loss
+            )]
+            solutions.push((word.to_vec(), ((score as f64) * penalty) as u64));
+        }
+
+        if solutions.is_empty() {
+            return Ok(Solution::None);
+        }
+
+        if solutions.len() == 1 {
+            let (word, _) = solutions.pop().unwrap();
+            let word = String::from_utf8(word).expect("input was strings");
+            return Ok(Solution::Solved(word));
+        }
+
+        solutions.sort_by_key(|(_, score)| Reverse(*score));
+        eprintln!("Found {} possible solutions", solutions.len());
+
+        let mut items = &mut solutions[..];
 
         let word = loop {
-            solutions.clear();
-            match initial_guess.take() {
-                Some(guess) => solutions.push(guess),
-                None => {
-                    while solutions.len() < solutions.capacity() {
-                        if let Some(w) = stream.next() {
-                            match std::str::from_utf8(w) {
-                                Ok(word) => solutions.push(word.to_string()),
-                                // this should never fail since we use strings as input
-                                Err(_) => continue,
-                            }
-                        } else if is_fallback {
-                            break;
-                        } else {
-                            is_fallback = true;
-                            stream = fsts.fallback.search(&wordle).into_stream();
-                        };
-                    }
-                }
-            }
-
-            if solutions.is_empty() {
-                return Ok(Solution::None);
-            }
+            let mid = items.len().min(10);
+            let (current, rest) = items.split_at_mut(mid);
 
             let mut selection = dialoguer::Select::new();
-            for word in &solutions {
+            for (word, _) in current.iter() {
+                let word = std::str::from_utf8(word).expect("input was strings");
                 let _ = selection.item(word);
             }
 
@@ -280,28 +336,37 @@ fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result
                 .item(QUIT)
                 .interact()?;
 
-            match selection.checked_sub(solutions.len()) {
-                Some(0) => continue,
-                Some(1) => continue 'outer,
+            match selection.checked_sub(current.len()) {
+                Some(0) => items = rest,
+                Some(1) => items = &mut solutions[..],
                 Some(_) => return Ok(Solution::Quit),
-                None => break solutions.swap_remove(selection),
+                None => break std::mem::take(&mut current[selection]).0,
             }
         };
 
         let mut wb = WordleBuilder::from(wordle);
         let mut selection = 0;
 
-        for (pos, b) in word.bytes().enumerate() {
+        for (pos, b) in word.into_iter().enumerate() {
             if wb.current().has_solution_at(pos) {
+                eprintln!(
+                    "Letter '{}' on position {}: Green:  Correct Letter in Correct Position",
+                    char::from(b.to_ascii_uppercase()),
+                    pos + 1
+                );
                 continue;
             }
 
             selection = dialoguer::Select::new()
-                .with_prompt(format!("Letter {} on position {}", char::from(b), pos + 1))
+                .with_prompt(format!(
+                    "Letter '{}' on position {}",
+                    char::from(b.to_ascii_uppercase()),
+                    pos + 1
+                ))
                 .items(&[
-                    "Grey: Wrong Letter",
+                    "Grey:   Wrong Letter",
                     "Yellow: Wrong Position",
-                    "Green: Correct Letter in Correct Position",
+                    "Green:  Correct Letter in Correct Position",
                     QUIT,
                 ])
                 .default(selection)
