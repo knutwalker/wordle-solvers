@@ -42,7 +42,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use wordle_automaton::WordleBuilder;
+use wordle_automaton::{types::Letter, WordleBuilder};
 
 fn main() -> Result<()> {
     let opts = parse_opts();
@@ -105,7 +105,7 @@ fn parse_opts() -> Opts {
                 .takes_value(true)
                 .value_name("BLOCK_LIST")
                 .required(false)
-                .help("A list of block words that are known to not be accepted. Must be one word per line.")
+                .help("A list of block words that are known to not be accepted. Must be one word per line, only lowercase.")
                 .long_help(None)
                 .short('b')
                 .long("block-list")
@@ -157,12 +157,13 @@ fn parse_opts() -> Opts {
     }
 }
 
-struct Pair<T> {
-    main: T,
-    fallback: T,
+struct Words {
+    different_letters: Vec<String>,
+    duplicate_letters: Vec<String>,
+    letter_frequency: HashMap<u8, u64>,
 }
 
-fn clean_word_list<I>(words: I, block_list: &HashSet<String>, merge: bool) -> Pair<Vec<String>>
+fn clean_word_list<I>(words: I, block_list: &HashSet<String>, merge: bool) -> Words
 where
     I: IntoIterator,
     I::Item: Into<String> + AsRef<str>,
@@ -185,12 +186,20 @@ where
     let mut possible_words = Vec::with_capacity(1024);
     let mut possible_stems = HashSet::with_capacity(1024);
     let mut possible_plurals = HashSet::with_capacity(1024);
+    let mut letter_frequency = HashMap::<u8, u64>::with_capacity(32);
 
     for word in words {
-        if valid_word(word.as_ref()) {
-            if block_list.contains(word.as_ref()) {
-                continue;
+        let word_ref = word.as_ref();
+
+        // build frequency table
+        if word_ref.is_ascii() {
+            // maps uppercase to lowercase, ignore non alphabetic chars
+            for byte in word_ref.bytes().filter_map(Letter::try_new).map(u8::from) {
+                *letter_frequency.entry(byte).or_default() += 1;
             }
+        }
+
+        if valid_word(word_ref) && !block_list.contains(word_ref) {
             let word: String = word.into();
             if word.len() == 4 {
                 let _ = possible_stems.insert(word);
@@ -208,20 +217,20 @@ where
         (!(possible_plurals.contains(&idx) && possible_stems.contains(&word[..4]))).then(|| word)
     };
 
-    let (main, fallback) = possible_words
+    let (different_letters, duplicate_letters) = possible_words
         .into_iter()
         .enumerate()
         .filter_map(is_singular)
         .partition(|w| merge || has_no_duplicate_letters(w));
 
-    Pair { main, fallback }
+    Words {
+        different_letters,
+        duplicate_letters,
+        letter_frequency,
+    }
 }
 
-fn load_word_list(
-    file: &Path,
-    block_list: Option<&Path>,
-    merge: bool,
-) -> Result<Pair<Vec<String>>> {
+fn load_word_list(file: &Path, block_list: Option<&Path>, merge: bool) -> Result<Words> {
     let lines = BufReader::new(
         File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
     );
@@ -233,7 +242,7 @@ fn load_word_list(
                     .wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
             )
             .lines()
-            .map(|l| Ok::<_, eyre::Report>(l?))
+            .map(|l| l.map_err(eyre::Report::from))
             .collect::<Result<HashSet<_>>>()
         })
         .transpose()
@@ -246,27 +255,42 @@ fn load_word_list(
     ))
 }
 
-fn build_fsts(Pair { main, fallback }: Pair<Vec<String>>) -> Result<Pair<Map<Vec<u8>>>> {
+struct Fsts {
+    different_letters: Map<Vec<u8>>,
+    duplicate_letters: Map<Vec<u8>>,
+}
+
+fn build_fsts(
+    Words {
+        different_letters,
+        duplicate_letters,
+        letter_frequency,
+    }: Words,
+) -> Result<Fsts> {
     // TODO: assumes sorted input. Could fallback to sort if from_iter fails
 
-    let mut freqs = HashMap::<u8, u64>::with_capacity(32);
-    for byte in main.iter().chain(fallback.iter()).flat_map(|s| s.bytes()) {
-        *freqs.entry(byte).or_default() += 1;
-    }
+    let score = move |s: &str| -> u64 {
+        s.bytes()
+            .map(|b| letter_frequency.get(&b).copied().unwrap_or_default())
+            .sum()
+    };
 
-    let main = Map::from_iter(main.into_iter().map(|s| {
-        let score = s.as_bytes().iter().map(|b| freqs[b]).sum::<u64>();
+    let different_letters = Map::from_iter(different_letters.into_iter().map(|s| {
+        let score = score(&s);
         (s, score)
     }))
     .wrap_err("The input file must be sorted.")?;
 
-    let fallback = Map::from_iter(fallback.into_iter().map(|s| {
-        let score = s.as_bytes().iter().map(|b| freqs[b]).sum::<u64>();
+    let duplicate_letters = Map::from_iter(duplicate_letters.into_iter().map(|s| {
+        let score = score(&s);
         (s, score)
     }))
     .wrap_err("The input file must be sorted.")?;
 
-    Ok(Pair { main, fallback })
+    Ok(Fsts {
+        different_letters,
+        duplicate_letters,
+    })
 }
 
 enum Solution {
@@ -275,7 +299,7 @@ enum Solution {
     Solved(String),
 }
 
-fn solve(fsts: &Pair<Map<Vec<u8>>>, penalty: f64) -> Result<Solution> {
+fn solve(fsts: &Fsts, penalty: f64) -> Result<Solution> {
     const QUIT: &str = "-- QUIT I don't want to play anymore";
 
     let mut solutions = Vec::with_capacity(10);
@@ -286,14 +310,14 @@ fn solve(fsts: &Pair<Map<Vec<u8>>>, penalty: f64) -> Result<Solution> {
             return Ok(Solution::Solved(wordle.decode_str()));
         }
 
-        let mut stream = fsts.main.search(&wordle).into_stream();
-        let mut second_stream = fsts.fallback.search(&wordle).into_stream();
+        let mut differents = fsts.different_letters.search(&wordle).into_stream();
+        let mut duplicates = fsts.duplicate_letters.search(&wordle).into_stream();
 
         solutions.clear();
-        while let Some((word, score)) = stream.next() {
+        while let Some((word, score)) = differents.next() {
             solutions.push((word.to_vec(), score));
         }
-        while let Some((word, score)) = second_stream.next() {
+        while let Some((word, score)) = duplicates.next() {
             // score and penalty are both bound in a way that will not run into those issues
             #[allow(
                 clippy::cast_possible_truncation,
