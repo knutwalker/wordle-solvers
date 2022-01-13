@@ -73,10 +73,10 @@ fn run<const N: usize>(opts: &Opts) -> Result<()> {
     let words = load_word_list::<N>(
         &opts.word_list,
         opts.block_list.as_deref(),
-        opts.no_tiered,
         opts.sort,
+        opts.penalty.0,
     )?;
-    let fsts = build_fsts(words, opts.penalty.0)?;
+    let fsts = build_fst(words)?;
     let solution = solve::<N>(&fsts)?;
     match solution {
         Solution::None => println!("Could not find a solution"),
@@ -96,7 +96,6 @@ struct Opts {
     block_list: Option<PathBuf>,
     sort: bool,
     penalty: Penalty,
-    no_tiered: bool,
     size: Size,
 }
 
@@ -197,17 +196,6 @@ fn parse_opts() -> Opts {
                 .default_value("0.5"),
         )
         .arg(
-            Arg::new("no-tiered")
-                .help("Merge the fst that are being searched")
-                .long_help(concat!(
-                    "Merge the fst that are being searched. ",
-                    "The default behavior is prioritize words that have no repeated characters and ",
-                    "only onclude the other words if their letters are quite frequent. ",
-                    "This flag merged both lists and searches them together. ",
-                    "This has the same behavior as `--penalty 0`, but might be faster",
-                ))
-                .long("no-tiered"),
-        ).arg(
             Arg::new("size")
                 .help("word size")
                 .short('s')
@@ -221,7 +209,6 @@ fn parse_opts() -> Opts {
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
     let sort = matches.is_present("sort");
     let penalty = matches.value_of_t("penalty").unwrap();
-    let no_tiered = matches.is_present("no-tiered");
     let size = matches.value_of_t("size").unwrap();
 
     Opts {
@@ -229,23 +216,47 @@ fn parse_opts() -> Opts {
         block_list,
         sort,
         penalty,
-        no_tiered,
         size,
     }
 }
 
-struct Words {
-    different_letters: Vec<String>,
-    duplicate_letters: Vec<String>,
-    letter_frequency: HashMap<u8, u64>,
+fn load_word_list<const N: usize>(
+    file: &Path,
+    block_list: Option<&Path>,
+    sort: bool,
+    penalty: f64,
+) -> Result<Vec<(String, u64)>> {
+    let lines = BufReader::new(
+        File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
+    );
+
+    let block_list = block_list
+        .map(|file| {
+            BufReader::new(
+                File::open(file)
+                    .wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
+            )
+            .lines()
+            .map(|l| l.map_err(eyre::Report::from))
+            .collect::<Result<HashSet<_>>>()
+        })
+        .transpose()
+        .wrap_err("The block list could not be read.")?;
+
+    Ok(clean_word_list::<_, N>(
+        lines.lines().map_while(Result::ok),
+        &block_list.unwrap_or_default(),
+        sort,
+        penalty,
+    ))
 }
 
 fn clean_word_list<I, const N: usize>(
     words: I,
     block_list: &HashSet<String>,
-    merge: bool,
     sort: bool,
-) -> Words
+    penalty: f64,
+) -> Vec<(String, u64)>
 where
     I: IntoIterator,
     I::Item: Into<String> + AsRef<str>,
@@ -254,15 +265,15 @@ where
         (word.len() == N || word.len() == N - 1) && word.bytes().all(|b| matches!(b, b'a'..=b'z'))
     }
 
-    fn has_no_duplicate_letters(word: &str) -> bool {
+    fn has_duplicate_letters(word: &str) -> bool {
         let mut word = word.as_bytes();
         while let Some((head, tail)) = word.split_first() {
             if tail.contains(head) {
-                return false;
+                return true;
             }
             word = tail;
         }
-        true
+        false
     }
 
     let mut possible_words = Vec::with_capacity(1024);
@@ -300,98 +311,41 @@ where
             .then(|| word)
     };
 
-    let (mut different_letters, mut duplicate_letters) = possible_words
-        .into_iter()
-        .enumerate()
-        .filter_map(is_singular)
-        .partition::<Vec<_>, _>(|w| merge || has_no_duplicate_letters(w));
-
-    if sort {
-        different_letters.sort();
-        duplicate_letters.sort();
-    }
-
-    Words {
-        different_letters,
-        duplicate_letters,
-        letter_frequency,
-    }
-}
-
-fn load_word_list<const N: usize>(
-    file: &Path,
-    block_list: Option<&Path>,
-    merge: bool,
-    sort: bool,
-) -> Result<Words> {
-    let lines = BufReader::new(
-        File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
-    );
-
-    let block_list = block_list
-        .map(|file| {
-            BufReader::new(
-                File::open(file)
-                    .wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
-            )
-            .lines()
-            .map(|l| l.map_err(eyre::Report::from))
-            .collect::<Result<HashSet<_>>>()
-        })
-        .transpose()
-        .wrap_err("The block list could not be read.")?;
-
-    Ok(clean_word_list::<_, N>(
-        lines.lines().map_while(Result::ok),
-        &block_list.unwrap_or_default(),
-        merge,
-        sort,
-    ))
-}
-
-struct Fsts {
-    different_letters: Map<Vec<u8>>,
-    duplicate_letters: Map<Vec<u8>>,
-}
-
-fn build_fsts(
-    Words {
-        different_letters,
-        duplicate_letters,
-        letter_frequency,
-    }: Words,
-    penalty: f64,
-) -> Result<Fsts> {
     let score = move |s: &str| -> u64 {
         s.bytes()
             .map(|b| letter_frequency.get(&b).copied().unwrap_or_default())
             .sum()
     };
 
-    let different_letters = Map::from_iter(different_letters.into_iter().map(|s| {
-        let score = score(&s);
-        (s, score)
-    }))
-    .wrap_err("The input file must be sorted. Try adding --sort.")?;
+    let mut words = possible_words
+        .into_iter()
+        .enumerate()
+        .filter_map(is_singular)
+        .map(|word| {
+            let mut score = score(&word);
+            if has_duplicate_letters(&word) {
+                // score and penalty are both bound in a way that will not run into those issues
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss
+                )]
+                let new_score = ((score as f64) * penalty) as u64;
+                score = new_score;
+            }
+            (word, score)
+        })
+        .collect::<Vec<_>>();
 
-    let duplicate_letters = Map::from_iter(duplicate_letters.into_iter().map(|s| {
-        let score = score(&s);
-        // score and penalty are both bound in a way that will not run into those issues
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_precision_loss,
-            clippy::cast_sign_loss
-        )]
-        let score = ((score as f64) * penalty) as u64;
+    if sort {
+        words.sort_by(|(l, _), (r, _)| l.cmp(r));
+    }
 
-        (s, score)
-    }))
-    .wrap_err("The input file must be sorted. Try adding --sort.")?;
+    words
+}
 
-    Ok(Fsts {
-        different_letters,
-        duplicate_letters,
-    })
+fn build_fst(words: Vec<(String, u64)>) -> Result<Map<Vec<u8>>> {
+    Map::from_iter(words).wrap_err("The input file must be sorted. Try adding --sort.")
 }
 
 enum Solution {
@@ -402,14 +356,13 @@ enum Solution {
 
 const QUIT: &str = "-- QUIT I don't want to play anymore";
 
-fn solve<const N: usize>(fsts: &Fsts) -> Result<Solution> {
+fn solve<const N: usize>(fst: &Map<Vec<u8>>) -> Result<Solution> {
     let mut wordle = WordleBuilder::<N>::new().build();
 
-    let mut solutions =
-        Vec::with_capacity(fsts.different_letters.len() + fsts.duplicate_letters.len());
+    let mut solutions = Vec::with_capacity(fst.len());
 
     loop {
-        if let Some(solution) = find_all_solutions(fsts, &wordle, &mut solutions) {
+        if let Some(solution) = find_all_solutions(fst, &wordle, &mut solutions) {
             return Ok(solution);
         }
 
@@ -428,7 +381,7 @@ fn solve<const N: usize>(fsts: &Fsts) -> Result<Solution> {
 }
 
 fn find_all_solutions<const N: usize>(
-    fsts: &Fsts,
+    fst: &Map<Vec<u8>>,
     wordle: &Wordle<N>,
     buf: &mut Vec<(Vec<u8>, u64)>,
 ) -> Option<Solution> {
@@ -436,15 +389,10 @@ fn find_all_solutions<const N: usize>(
         return Some(Solution::Solved(wordle.decode_str()));
     }
 
-    let mut differents = fsts.different_letters.search(&wordle).into_stream();
-    let mut duplicates = fsts.duplicate_letters.search(&wordle).into_stream();
-
     buf.clear();
 
-    while let Some((word, score)) = differents.next() {
-        buf.push((word.to_vec(), score));
-    }
-    while let Some((word, score)) = duplicates.next() {
+    let mut stream = fst.search(&wordle).into_stream();
+    while let Some((word, score)) = stream.next() {
         buf.push((word.to_vec(), score));
     }
 
