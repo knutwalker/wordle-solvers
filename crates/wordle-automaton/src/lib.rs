@@ -256,12 +256,32 @@ impl WordleBuilder {
 
     /// Build the final automaton for the added constraints
     pub fn build(&mut self) -> Wordle {
-        std::mem::replace(&mut self.0, Wordle::new())
+        let mut wordle = std::mem::replace(&mut self.0, Wordle::new());
+
+        // if we signal something as 'never' but it's also green or yellow somewhere, we must
+        // remove it from 'never' as we would otherwise not find a match
+        let full_never = wordle.never;
+        let never = wordle.positions.iter_mut().fold(full_never, |never, cons| {
+            // remove all letters with a known constraint from the global never set
+            let never = if cons.is_free() {
+                never.remove_all(cons.must_not_letters())
+            } else {
+                never.remove(cons.must_letter())
+            };
+            // add all global nevers to the prohibited set of this constraint
+            // we need to do this _after_ the previous step
+            // otherwise we would always remove all never letters
+            *cons = cons.must_not_all(full_never);
+            never
+        });
+
+        wordle.never = never;
+        wordle
     }
 
     /// Return the current automaton
     ///
-    /// The automaton is in a valid state, i.e. can be used to search in an FST
+    /// The automaton may not be in a valid state, i.e. should not be used to search in an FST
     #[must_use]
     pub const fn current(&self) -> &Wordle {
         &self.0
@@ -408,6 +428,52 @@ mod tests {
             .build();
 
         test_fst(wordle, ["abcde", "abced", "abcef"], &["abced"]);
+    }
+
+    #[test]
+    fn test_guess_with_repeated_letters_as_yellow() {
+        // word is abcde, guess was abcee
+        let wordle = WordleBuilder::new()
+            .correct_pos(0, b'a')
+            .correct_pos(1, b'b')
+            .correct_pos(2, b'c')
+            .wrong_pos(3, b'e')
+            .correct_pos(4, b'e')
+            .build();
+
+        // there is actually no correct solution as e may not appear in the 4th pos
+        // which means it must appear somewhere else, but all the other positions
+        // are already determined
+
+        test_fst(wordle, ["abcde", "abcee"], &[]);
+
+        // if we free up the last slot, we get the correct solution
+        let wordle = WordleBuilder::new()
+            .correct_pos(0, b'a')
+            .correct_pos(1, b'b')
+            .correct_pos(2, b'c')
+            .wrong_pos(3, b'e')
+            .build();
+
+        test_fst(wordle, ["abcde", "abcee"], &["abcde"]);
+    }
+
+    #[test]
+    fn test_guess_with_repeated_letters_as_gray() {
+        // word is abcde, guess was abcee
+        let wordle = WordleBuilder::new()
+            .correct_pos(0, b'a')
+            .correct_pos(1, b'b')
+            .correct_pos(2, b'c')
+            .never(b'e')
+            .correct_pos(4, b'e')
+            .build();
+
+        // the e in 4th position is different from the e in last position
+        // disallowing any e while another e is known to be valid should
+        // still yield a solution
+
+        test_fst(wordle, ["abcde", "abcee"], &["abcde"]);
     }
 
     fn test_fst<'a>(

@@ -50,16 +50,34 @@ impl LetterSet {
         Self(0)
     }
 
-    /// Test if a letter is contained in this set
+    /// Test if a letter is contained in this set, O(1)
     #[must_use]
     pub const fn contains(self, letter: Letter) -> bool {
         (self.0 >> letter.0) & 1 == 1
     }
 
-    /// Add a letter to this set
+    /// Add a letter to this set, O(1)
     #[must_use]
     pub const fn add(self, letter: Letter) -> Self {
         Self(self.0 | (1 << letter.0))
+    }
+
+    /// Add all letter to this set, O(1)
+    #[must_use]
+    pub const fn add_all(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+
+    /// Remove a letter from this set, O(1)
+    #[must_use]
+    pub const fn remove(self, letter: Letter) -> Self {
+        Self(self.0 & !(1 << letter.0))
+    }
+
+    /// Remove all letters from this set that are present in the `rhs` set, O(1)
+    #[must_use]
+    pub const fn remove_all(self, rhs: Self) -> Self {
+        Self(self.0 & !rhs.0)
     }
 }
 
@@ -210,15 +228,30 @@ impl Constraint {
         Self(LetterSet(self.0).add(letter).0)
     }
 
+    /// Flags all letters as invalid for this constraint
+    #[must_use]
+    pub const fn must_not_all(self, letters: LetterSet) -> Self {
+        Self(LetterSet(self.0).add_all(letters).0)
+    }
+
     /// Return the letter that is known to be required
     ///
-    /// The result is unreliable if [`Constraint::is_free()`] returns `false`.
+    /// The result is unreliable if [`Constraint::is_free()`] returns `true`.
     /// _Some_ arbitrary letter is returned.
     #[must_use]
     pub const fn must_letter(self) -> Letter {
         // cast is safe since we shift by 26 and mask by 0x1F, which leaves 5 bits
         #[allow(clippy::cast_possible_truncation)]
         Letter(((self.0 >> 26) & 0x1F) as _)
+    }
+
+    /// Returns the letters that are known to not be in this position
+    ///
+    /// The result is unreliable if [`Constraint::is_free()`] returns `false`.
+    /// _Some_ arbitrary letters are returned.
+    #[must_use]
+    pub const fn must_not_letters(self) -> LetterSet {
+        LetterSet(self.0 & 0x03FF_FFFF)
     }
 }
 
@@ -276,6 +309,63 @@ mod tests {
         let set = set.add(Letter(0));
         assert!(set.contains(Letter(0)));
         assert!(set.contains(Letter(1)));
+    }
+
+    #[test]
+    fn test_set_add_all() {
+        let set = LetterSet::new()
+            .add(Letter(0))
+            .add(Letter(1))
+            .add(Letter(2));
+
+        let set2 = LetterSet::new().add_all(set);
+        assert_eq!(set, set2);
+    }
+
+    #[test]
+    fn test_set_remove() {
+        let set = LetterSet::new().add(Letter(0)).add(Letter(1));
+        assert!(set.contains(Letter(0)));
+        assert!(set.contains(Letter(1)));
+
+        let set = set.remove(Letter(0));
+        assert!(!set.contains(Letter(0)));
+        assert!(set.contains(Letter(1)));
+
+        let set = set.remove(Letter(1));
+        assert!(!set.contains(Letter(0)));
+        assert!(!set.contains(Letter(1)));
+
+        // removing a letter is idempotent
+        let set2 = set.remove(Letter(1));
+        assert_eq!(set, set2);
+    }
+
+    #[test]
+    fn test_set_remove_all() {
+        let set = LetterSet::new()
+            .add(Letter(0))
+            .add(Letter(1))
+            .add(Letter(2));
+        assert!(set.contains(Letter(0)));
+        assert!(set.contains(Letter(1)));
+        assert!(set.contains(Letter(2)));
+        assert!(!set.contains(Letter(3)));
+
+        let to_remove = LetterSet::new()
+            .add(Letter(1))
+            .add(Letter(2))
+            .add(Letter(3));
+
+        let set = set.remove_all(to_remove);
+        assert!(set.contains(Letter(0)));
+        assert!(!set.contains(Letter(1)));
+        assert!(!set.contains(Letter(2)));
+        assert!(!set.contains(Letter(3)));
+
+        // removing letters is idempotent
+        let set2 = set.remove_all(to_remove);
+        assert_eq!(set, set2);
     }
 
     #[test]
@@ -392,6 +482,44 @@ mod tests {
     }
 
     #[test]
+    fn test_constraint_must_not_all() {
+        let must_not = LetterSet::new().add(Letter(0)).add(Letter(1));
+        let cons = Constraint::new().must_not_all(must_not);
+
+        assert!(cons.is_free());
+        assert_eq!(cons.must_not_letters(), must_not);
+        assert!(!cons.accept(Letter(0)));
+        assert!(!cons.accept(Letter(1)));
+    }
+
+    #[test]
+    fn test_constraint_changing_must_not_after_must() {
+        let cons = Constraint::new();
+        assert!(cons.accept(Letter(0)));
+        assert!(cons.accept(Letter(1)));
+        assert!(cons.accept(Letter(2)));
+        assert!(cons.is_free());
+
+        let cons = cons.must(Letter(0));
+        assert!(cons.accept(Letter(0)));
+        assert!(!cons.accept(Letter(1)));
+        assert!(!cons.accept(Letter(2)));
+        assert!(!cons.is_free());
+
+        let cons = cons.must_not(Letter(1));
+        assert!(cons.accept(Letter(0)));
+        assert!(!cons.accept(Letter(1)));
+        assert!(!cons.accept(Letter(2)));
+        assert!(!cons.is_free());
+
+        let cons = cons.must_not_all(LetterSet::new().add(Letter(1)).add(Letter(2)));
+        assert!(cons.accept(Letter(0)));
+        assert!(!cons.accept(Letter(1)));
+        assert!(!cons.accept(Letter(2)));
+        assert!(!cons.is_free());
+    }
+
+    #[test]
     fn test_constraint_must_letter() {
         let cons = Constraint::new();
 
@@ -400,5 +528,23 @@ mod tests {
 
         let cons = cons.must(Letter(2));
         assert_eq!(cons.must_letter(), Letter(2));
+    }
+
+    #[test]
+    fn test_constraint_must_not_letters() {
+        let cons = Constraint::new();
+        let expected = LetterSet::new();
+
+        let cons = cons.must_not(Letter(1));
+        let expected = expected.add(Letter(1));
+        assert_eq!(cons.must_not_letters(), expected);
+
+        let cons = cons.must_not(Letter(2));
+        let expected = expected.add(Letter(2));
+        assert_eq!(cons.must_not_letters(), expected);
+
+        let cons = cons.must_not(Letter(4));
+        let expected = expected.add(Letter(4));
+        assert_eq!(cons.must_not_letters(), expected);
     }
 }
