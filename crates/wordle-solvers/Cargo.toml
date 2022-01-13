@@ -14,8 +14,8 @@ keywords = ["wordle", "puzzle", "solver"]
 
 
 [dependencies]
-clap = { version = "3.0.6", default-features = false, features = ["std", "color"] }
-color-eyre = { version = "0.5.11", default-features = false }
+clap = { version = "3.0.6", default-features = false, features = ["std"] }
+eyre = { version = "0.6.5", default-features = false }
 dialoguer = { version = "0.9.0", default-features = false }
 fst = "0.4.7"
 wordle-automaton = { path = "../wordle-automaton", version = "^0.2.0"}

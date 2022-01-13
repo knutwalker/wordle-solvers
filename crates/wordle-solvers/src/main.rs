@@ -32,7 +32,7 @@
 )]
 
 use clap::{App, Arg};
-use color_eyre::{config::HookBuilder, Help, Result};
+use eyre::{Result, WrapErr};
 use fst::{IntoStreamer, Set, Streamer};
 use std::{
     collections::{HashMap, HashSet},
@@ -44,7 +44,6 @@ use wordle_automaton::WordleBuilder;
 
 fn main() -> Result<()> {
     let opts = parse_opts();
-    install_eyre()?;
     let words = load_word_list(&opts.word_list, opts.block_list.as_deref(), opts.no_tiered)?;
     let initial_guess = take_best_guess(&words.main).cloned();
     let fsts = build_fsts(words)?;
@@ -178,17 +177,21 @@ fn load_word_list(
     merge: bool,
 ) -> Result<Pair<Vec<String>>> {
     let lines = BufReader::new(
-        File::open(file).with_note(|| format!("The file '{}' is missing.", file.display()))?,
+        File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
     );
 
     let block_list = block_list
         .map(|file| {
-            BufReader::new(File::open(file)?)
-                .lines()
-                .collect::<Result<HashSet<_>, _>>()
+            BufReader::new(
+                File::open(file)
+                    .wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
+            )
+            .lines()
+            .map(|l| Ok::<_, eyre::Report>(l?))
+            .collect::<Result<HashSet<_>>>()
         })
         .transpose()
-        .note("The block list could not be read.")?;
+        .wrap_err("The block list could not be read.")?;
 
     Ok(clean_word_list(
         lines.lines().map_while(Result::ok),
@@ -210,8 +213,8 @@ fn take_best_guess(main: &[String]) -> Option<&String> {
 fn build_fsts(Pair { main, fallback }: Pair<Vec<String>>) -> Result<Pair<Set<Vec<u8>>>> {
     // TODO: assumes sorted input. Could fallback to sort if from_iter fails
 
-    let main = Set::from_iter(main).suggestion("The input file must be sorted.")?;
-    let fallback = Set::from_iter(fallback).suggestion("The input file must be sorted.")?;
+    let main = Set::from_iter(main).wrap_err("The input file must be sorted.")?;
+    let fallback = Set::from_iter(fallback).wrap_err("The input file must be sorted.")?;
 
     Ok(Pair { main, fallback })
 }
@@ -314,8 +317,4 @@ fn solve(fsts: &Pair<Set<Vec<u8>>>, mut initial_guess: Option<String>) -> Result
 
         wordle = wb.build();
     }
-}
-
-fn install_eyre() -> Result<()> {
-    HookBuilder::default().display_env_section(false).install()
 }

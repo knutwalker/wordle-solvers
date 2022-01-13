@@ -12,5 +12,3 @@ overflow-checks = false
 panic = 'unwind'
 rpath = false
 
-[profile.dev.package.backtrace]
-opt-level = 3
