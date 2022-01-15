@@ -42,7 +42,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use wordle_automaton::{Letter, Wordle, WordleBuilder};
+use wordle_automaton::{Guess, Letter, Wordle, WordleBuilder};
 
 #[cfg(feature = "generate")]
 mod words;
@@ -104,9 +104,24 @@ fn run<const N: usize>(opts: &Opts) -> Result<()> {
     loop {
         let solution = solve::<N>(&fsts)?;
         match solution {
-            Solution::Solved(mut solution) => {
+            Solution::Solved(mut solution, guesses) => {
                 solution.make_ascii_uppercase();
-                println!("Solution: {}", solution);
+                println!("Solution: {solution}");
+                println!();
+                println!("Wordle {}/6", guesses.len());
+                for guess in guesses {
+                    let guess = guess
+                        .iter()
+                        .map(|g| match g {
+                            Guess::Absent => '⬛',
+                            Guess::Present => '🟨',
+                            Guess::Correct => '🟩',
+                        })
+                        .collect::<String>();
+                    println!("{guess}");
+                }
+                println!();
+                println!("Solution: {solution}");
             }
             Solution::None => println!("Could not find a solution"),
             Solution::Restart => continue,
@@ -391,8 +406,8 @@ fn build_fst(words: Vec<(String, u64)>) -> Result<Map<Vec<u8>>> {
     Map::from_iter(words).wrap_err("The input file must be sorted. Try adding --sort.")
 }
 
-enum Solution {
-    Solved(String),
+enum Solution<const N: usize> {
+    Solved(String, Vec<[Guess; N]>),
     None,
     Restart,
     Quit,
@@ -400,39 +415,60 @@ enum Solution {
 
 const QUIT: &str = "-- QUIT I don't want to play anymore";
 
-fn solve<const N: usize>(fst: &Map<Vec<u8>>) -> Result<Solution> {
+fn solve<const N: usize>(fst: &Map<Vec<u8>>) -> Result<Solution<N>> {
     let mut wordle = WordleBuilder::<N>::new().build();
+    let mut guesses = Vec::with_capacity(6);
 
     let mut solutions = Vec::with_capacity(fst.len());
+    let wordle = loop {
+        let (next_worlde, word) = match guess_next(fst, wordle, &mut solutions)? {
+            Ok(next) => next,
+            Err(solution) => return Ok(solution),
+        };
 
-    loop {
-        if let Some(solution) = find_all_solutions(fst, &wordle, &mut solutions) {
-            return Ok(solution);
+        wordle = next_worlde;
+
+        guesses.push(extract_guess(&wordle, &word));
+        if wordle.is_solved() {
+            break wordle;
         }
+    };
 
-        eprintln!("Found {} possible solutions", solutions.len());
+    Ok(Solution::Solved(wordle.decode_str(), guesses))
+}
 
-        let word = match find_word_to_play(&wordle, &mut solutions)? {
-            Ok(word) => word,
-            Err(solution) => return Ok(solution),
-        };
-
-        wordle = match apply_feedback(wordle, word)? {
-            Ok(wordle) => wordle,
-            Err(solution) => return Ok(solution),
-        };
+fn guess_next<const N: usize>(
+    fst: &Map<Vec<u8>>,
+    wordle: Wordle<N>,
+    solutions: &mut Vec<(Vec<u8>, u64)>,
+) -> Result<Result<(Wordle<N>, Vec<u8>), Solution<N>>> {
+    if let Some(solution) = find_all_solutions(fst, &wordle, solutions) {
+        match solution {
+            Ok(word) => return Ok(Ok((mark_as_correct(wordle, &word), word))),
+            Err(solution) => return Ok(Err(solution)),
+        }
     }
+
+    eprintln!("Found {} possible solutions", solutions.len());
+
+    let word = match find_word_to_play(&wordle, solutions)? {
+        Ok(word) => word,
+        Err(solution) => return Ok(Err(solution)),
+    };
+
+    let wordle = match apply_feedback(wordle, &word)? {
+        Ok(wordle) => wordle,
+        Err(solution) => return Ok(Err(solution)),
+    };
+
+    Ok(Ok((wordle, word)))
 }
 
 fn find_all_solutions<const N: usize>(
     fst: &Map<Vec<u8>>,
     wordle: &Wordle<N>,
     buf: &mut Vec<(Vec<u8>, u64)>,
-) -> Option<Solution> {
-    if wordle.is_solved() {
-        return Some(Solution::Solved(wordle.decode_str()));
-    }
-
+) -> Option<Result<Vec<u8>, Solution<N>>> {
     buf.clear();
 
     let mut stream = fst.search(&wordle).into_stream();
@@ -441,13 +477,12 @@ fn find_all_solutions<const N: usize>(
     }
 
     if buf.is_empty() {
-        return Some(Solution::None);
+        return Some(Err(Solution::None));
     }
 
     if buf.len() == 1 {
         let (word, _) = buf.pop().unwrap();
-        let word = String::from_utf8(word).expect("input was strings");
-        return Some(Solution::Solved(word));
+        return Some(Ok(word));
     }
 
     buf.sort_by_key(|(_, score)| Reverse(*score));
@@ -455,10 +490,18 @@ fn find_all_solutions<const N: usize>(
     None
 }
 
+fn mark_as_correct<const N: usize>(wordle: Wordle<N>, word: &[u8]) -> Wordle<N> {
+    let mut wb = WordleBuilder::from(wordle);
+    word.iter()
+        .enumerate()
+        .fold(&mut wb, |wb, (pos, b)| wb.correct_pos(pos, *b))
+        .build()
+}
+
 fn find_word_to_play<const N: usize>(
     wordle: &Wordle<N>,
     options: &mut [(Vec<u8>, u64)],
-) -> Result<Result<Vec<u8>, Solution>> {
+) -> Result<Result<Vec<u8>, Solution<N>>> {
     let mut items = &mut *options;
 
     Ok(Ok(loop {
@@ -536,12 +579,12 @@ fn test_word<const N: usize>(word: &str, wordle: &Wordle<N>) -> bool {
 
 fn apply_feedback<const N: usize>(
     wordle: Wordle<N>,
-    word: Vec<u8>,
-) -> Result<Result<Wordle<N>, Solution>> {
+    word: &[u8],
+) -> Result<Result<Wordle<N>, Solution<N>>> {
     let mut wb = WordleBuilder::from(wordle);
     let mut selection = 0;
 
-    for (pos, b) in word.into_iter().enumerate() {
+    for (pos, &b) in word.iter().enumerate() {
         if wb.current().solution_at(pos) == Some(b) {
             eprintln!(
                 "Letter '{}' on position {}: Green:  Correct Letter in Correct Position",
@@ -579,4 +622,13 @@ fn apply_feedback<const N: usize>(
     }
 
     Ok(Ok(wb.build()))
+}
+
+fn extract_guess<const N: usize>(wordle: &Wordle<N>, word: &[u8]) -> [Guess; N] {
+    let mut pos = 0;
+    [(); N].map(|_| {
+        let guess = wordle.decode_guess(pos, word[pos]);
+        pos += 1;
+        guess
+    })
 }

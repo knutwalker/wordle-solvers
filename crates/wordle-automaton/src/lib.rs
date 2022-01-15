@@ -195,6 +195,50 @@ impl<const N: usize> Wordle<N> {
     pub fn decode_str(&self) -> String {
         self.decode().map(char::from).collect()
     }
+
+    /// Decode a guess for a single position
+    ///
+    /// The result only makes sense if the result had been see before,
+    /// otherwise is may erroneously be reported as 'correct'.
+    ///
+    /// For a fallible variant, use `[Wordle::try_decode_guess()]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guess is not in [a-zA-Z]
+    /// Panics if the `pos` is out of bounds (N..)
+    #[must_use]
+    pub const fn decode_guess(&self, pos: usize, guess: u8) -> Guess {
+        let letter = Letter::new(guess);
+        if self.never.contains(letter) {
+            Guess::Absent
+        } else if self.positions[pos].accept(letter) {
+            Guess::Correct
+        } else {
+            Guess::Present
+        }
+    }
+
+    /// Decode a guess for a single position
+    ///
+    /// Returns Ok(`[Guess]`) if there is a known result about that guess.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the guess was never seen at this position
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guess is not in [a-zA-Z]
+    /// Panics if the `pos` is out of bounds (N..)
+    pub const fn try_decode_guess(&self, pos: usize, guess: u8) -> Result<Guess, GuessError> {
+        let guess = self.decode_guess(pos, guess);
+        match guess {
+            Guess::Correct if self.positions[pos].is_free() => Err(GuessError::NeverSeen),
+            Guess::Present if !self.positions[pos].is_free() => Err(GuessError::NeverSeen),
+            guess => Ok(guess),
+        }
+    }
 }
 
 /// A Builder to create instances of the [`Wordle`] automaton.
@@ -324,6 +368,24 @@ impl<const N: usize> WordleBuilder<N> {
     pub const fn current(&self) -> &Wordle<N> {
         &self.0
     }
+}
+
+/// A guess result for a given letter
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Guess {
+    /// The letter is never part of the result ('Gray')
+    Absent,
+    /// The letter is in the result but at the wrong position ('Yellow')
+    Present,
+    /// The letter is in its correct position ('Green')
+    Correct,
+}
+
+/// Error results for a guess result for a given letter
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GuessError {
+    /// The letter has never been seen
+    NeverSeen,
 }
 
 #[derive(Clone, Debug)]
