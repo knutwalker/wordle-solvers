@@ -250,21 +250,20 @@ impl<const N: usize> Wordle<N> {
 /// let wordle = WordleBuilder::<5>::new().never_all(b"nope").correct_pos(1, b'f').wrong_pos(2, b'x').build();
 /// ```
 #[derive(Clone, Debug)]
-pub struct WordleBuilder<const N: usize>(Wordle<N>);
+pub struct WordleBuilder<const N: usize>(Wordle<N>, LetterList<N>);
 
 impl<const N: usize> WordleBuilder<N> {
     /// Create a new builder without any constraints
     #[must_use]
     pub const fn new() -> Self {
-        Self(Wordle::new())
+        Self(Wordle::new(), LetterList::new())
     }
 
     /// Create a new builder based on existing constraints
-    #[allow(clippy::missing_const_for_fn)] // cannot be const because of union
     #[must_use]
     pub fn from(mut wordle: Wordle<N>) -> Self {
-        wordle.eventually = LetterList::new();
-        Self(wordle)
+        let old_eventually = std::mem::replace(&mut wordle.eventually, LetterList::new());
+        Self(wordle, old_eventually)
     }
 
     /// Signal that the given `letter` is never part of any solution on any position
@@ -340,22 +339,36 @@ impl<const N: usize> WordleBuilder<N> {
 
         // if we signal something as 'never' but it's also green or yellow somewhere, we must
         // remove it from 'never' as we would otherwise not find a match
-        let full_never = wordle.never;
-        let never = wordle.positions.iter_mut().fold(full_never, |never, cons| {
+        let mut never = wordle.never;
+        // we also collect a set of all letters that are already solved
+        let mut solved = LetterSet::new();
+
+        for cons in wordle.positions.iter_mut() {
             // remove all letters with a known constraint from the global never set
-            let never = if cons.is_free() {
-                never.remove_all(cons.must_not_letters())
-            } else {
-                never.remove(cons.must_letter())
-            };
             if cons.is_free() {
+                never = never.remove_all(cons.must_not_letters());
                 // add all global nevers to the prohibited set of this constraint
                 // we need to do this _after_ the previous step
                 // otherwise we would always remove all never letters
-                *cons = cons.must_not_all(full_never);
+                *cons = cons.must_not_all(wordle.never);
+            } else {
+                never = never.remove(cons.must_letter());
+                solved = solved.add(cons.must_letter());
+            };
+        }
+
+        // we add all previous eventual letters if they are not already handles
+        for &letter in self.1.iter() {
+            // if the letter needed to be eventually in the result but is not excluded from it
+            // we cannot produce a valid result. By blocking all letters, we would never match.
+            if never.contains(letter) {
+                never = LetterSet::full();
             }
-            never
-        });
+            // add it only if it hasn't been solved now or was already added
+            if !solved.contains(letter) {
+                wordle.eventually.add_if_absent(letter);
+            }
+        }
 
         wordle.never = never;
         wordle
@@ -461,7 +474,7 @@ impl<const N: usize> Automaton for Wordle<N> {
     }
 
     fn can_match(&self, state: &Self::State) -> bool {
-        state.is_some()
+        !self.never.is_full() && state.as_ref().map_or(false, |s| s.pos.get() <= N)
     }
 }
 

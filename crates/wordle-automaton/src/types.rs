@@ -58,10 +58,23 @@ impl LetterSet {
         Self(0)
     }
 
+    /// Create a full set
+    #[must_use]
+    pub const fn full() -> Self {
+        Self(u32::MAX)
+    }
+
     /// Test if a letter is contained in this set, O(1)
     #[must_use]
     pub const fn contains(self, letter: Letter) -> bool {
         (self.0 >> letter.0) & 1 == 1
+    }
+
+    /// Returns true off this contains all possible values
+    #[must_use]
+    pub const fn is_full(self) -> bool {
+        const FULL: u32 = (1 << 26) - 1;
+        self.0 & FULL == FULL
     }
 
     /// Add a letter to this set, O(1)
@@ -114,11 +127,15 @@ impl<const N: usize> LetterList<N> {
     }
 
     /// Adds a letter in O(1)
-    ///
-    /// # Panics
-    /// Panic if the list is full
     pub fn add(&mut self, letter: Letter) {
         self.0.push(letter);
+    }
+
+    /// Adds a letter only if it is not already contained in this list, O(n)
+    pub fn add_if_absent(&mut self, letter: Letter) {
+        if !self.0.contains(&letter) {
+            self.0.push(letter);
+        }
     }
 
     /// Removes a letter by comparing the value in O(n)
@@ -286,6 +303,14 @@ mod tests {
     }
 
     #[test]
+    fn test_set_full() {
+        let set = LetterSet::full();
+        assert!(set.contains(Letter(0)));
+        assert!(set.contains(Letter(1)));
+        assert!(set.is_full());
+    }
+
+    #[test]
     fn test_set_add_all() {
         let set = LetterSet::new()
             .add(Letter(0))
@@ -356,6 +381,14 @@ mod tests {
         // list semantics, not set
         list.add(Letter(0));
         assert_eq!(list.len(), 3);
+
+        // add with set semantics
+        list.add_if_absent(Letter(0));
+        list.add_if_absent(Letter(1));
+        assert_eq!(list.len(), 3);
+
+        list.add_if_absent(Letter(2));
+        assert_eq!(list.len(), 4);
     }
 
     fn contains<const N: usize>(ev: &LetterList<N>, letter: Letter) -> bool {

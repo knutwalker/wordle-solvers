@@ -613,7 +613,9 @@ fn apply_feedback<const N: usize>(
 
         let _ = match selection {
             0 => wb.never(b),
+            1 if wb.current().has_solution_at(pos) => wb.eventually(b),
             1 => wb.wrong_pos(pos, b),
+            2 if wb.current().has_solution_at(pos) => return Ok(Err(Solution::None)),
             2 => wb.correct_pos(pos, b),
             3 => wb.eventually(b),
             4 => &mut wb,
