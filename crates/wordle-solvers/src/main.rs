@@ -77,14 +77,18 @@ fn run<const N: usize>(opts: &Opts) -> Result<()> {
         opts.penalty.0,
     )?;
     let fsts = build_fst(words)?;
+    loop {
     let solution = solve::<N>(&fsts)?;
     match solution {
-        Solution::None => println!("Could not find a solution"),
-        Solution::Quit => {}
         Solution::Solved(mut solution) => {
             solution.make_ascii_uppercase();
             println!("Solution: {}", solution);
         }
+            Solution::None => println!("Could not find a solution"),
+            Solution::Restart => continue,
+            Solution::Quit => {}
+        };
+        break;
     }
 
     Ok(())
@@ -349,9 +353,10 @@ fn build_fst(words: Vec<(String, u64)>) -> Result<Map<Vec<u8>>> {
 }
 
 enum Solution {
-    None,
-    Quit,
     Solved(String),
+    None,
+    Restart,
+    Quit,
 }
 
 const QUIT: &str = "-- QUIT I don't want to play anymore";
@@ -432,6 +437,7 @@ fn find_word_to_play<const N: usize>(
             .default(0)
             .item("-- No, I want new words")
             .item("-- No, I want to redo the current guess from the top")
+            .item("-- No, I want to throw away all guesses and restart from the beginning")
             .item("-- No, I want to manually enter a word")
             .item(QUIT)
             .interact()?;
@@ -439,7 +445,18 @@ fn find_word_to_play<const N: usize>(
         match selection.checked_sub(current.len()) {
             Some(0) => items = rest,
             Some(1) => items = options,
-            Some(2) => {
+            Some(2) => return Ok(Err(Solution::Restart)),
+            Some(3) => match enter_word(wordle)? {
+                Some(word) => break word,
+                None => items = options,
+            },
+            Some(_) => return Ok(Err(Solution::Quit)),
+            None => break std::mem::take(&mut current[selection]).0,
+        }
+    }))
+}
+
+fn enter_word<const N: usize>(wordle: &Wordle<N>) -> Result<Option<Vec<u8>>> {
                 let word = dialoguer::Input::new()
                     .with_prompt("Please enter the word you want to play")
                     .validate_with(|s: &String| {
@@ -453,8 +470,8 @@ fn find_word_to_play<const N: usize>(
                     })
                     .interact_text()?;
 
-                if !test_word(&word, wordle)
-                    && !dialoguer::Confirm::new()
+    Ok((test_word(&word, wordle)
+        || dialoguer::Confirm::new()
                         .with_prompt(format!(
                             concat!(
                                 "The selected word '{}' does not match the currenct constraints. ",
@@ -463,19 +480,8 @@ fn find_word_to_play<const N: usize>(
                             word
                         ))
                         .default(false)
-                        .interact()?
-                {
-                    items = options;
-                    continue;
-                }
-
-                break word.into_bytes();
-            }
-
-            Some(_) => return Ok(Err(Solution::Quit)),
-            None => break std::mem::take(&mut current[selection]).0,
-        }
-    }))
+            .interact()?)
+    .then(|| word.into_bytes()))
 }
 
 fn test_word<const N: usize>(word: &str, wordle: &Wordle<N>) -> bool {
