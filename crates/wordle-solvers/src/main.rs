@@ -44,10 +44,34 @@ use std::{
 };
 use wordle_automaton::{Letter, Wordle, WordleBuilder};
 
+#[cfg(feature = "generate")]
+mod words;
+
 const MAX_SIZE: usize = 16;
 
 fn main() -> Result<()> {
     let opts = parse_opts();
+
+    #[cfg(feature = "generate")]
+    {
+        use std::io::{BufWriter, Write};
+        if opts.generate {
+            let file = File::options()
+                .create_new(true)
+                .write(true)
+                .open(opts.word_list)?;
+            let mut writer = BufWriter::new(file);
+
+            let words = words::word_list();
+            for word in words {
+                writer.write_all(word.as_bytes())?;
+                writer.write_all(b"\n")?;
+            }
+
+            return Ok(());
+        }
+    }
+
     match opts.size.0 {
         1 => run::<1>(&opts),
         2 => run::<2>(&opts),
@@ -78,12 +102,12 @@ fn run<const N: usize>(opts: &Opts) -> Result<()> {
     )?;
     let fsts = build_fst(words)?;
     loop {
-    let solution = solve::<N>(&fsts)?;
-    match solution {
-        Solution::Solved(mut solution) => {
-            solution.make_ascii_uppercase();
-            println!("Solution: {}", solution);
-        }
+        let solution = solve::<N>(&fsts)?;
+        match solution {
+            Solution::Solved(mut solution) => {
+                solution.make_ascii_uppercase();
+                println!("Solution: {}", solution);
+            }
             Solution::None => println!("Could not find a solution"),
             Solution::Restart => continue,
             Solution::Quit => {}
@@ -101,6 +125,8 @@ struct Opts {
     sort: bool,
     penalty: Penalty,
     size: Size,
+    #[cfg(feature = "generate")]
+    generate: bool,
 }
 
 #[derive(Debug)]
@@ -138,7 +164,7 @@ impl FromStr for Size {
 }
 
 fn parse_opts() -> Opts {
-    let matches = App::new(env!("CARGO_PKG_NAME"))
+    let app = App::new(env!("CARGO_PKG_NAME"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .version(env!("CARGO_PKG_VERSION"))
         .long_about(None)
@@ -206,8 +232,19 @@ fn parse_opts() -> Opts {
                 .long("size")
                 .validator(str::parse::<usize>) // todo: limit size
                 .default_value("5"),
-        )
-        .get_matches();
+        );
+
+    let matches = {
+        #[cfg(feature = "generate")]
+        {
+            app.arg(Arg::new("generate").long("generate")).get_matches()
+        }
+
+        #[cfg(not(feature = "generate"))]
+        {
+            app.get_matches()
+        }
+    };
 
     let word_list = PathBuf::from(matches.value_of_os("word-list").unwrap());
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
@@ -221,6 +258,8 @@ fn parse_opts() -> Opts {
         sort,
         penalty,
         size,
+        #[cfg(feature = "generate")]
+        generate: matches.is_present("generate"),
     }
 }
 
@@ -457,29 +496,29 @@ fn find_word_to_play<const N: usize>(
 }
 
 fn enter_word<const N: usize>(wordle: &Wordle<N>) -> Result<Option<Vec<u8>>> {
-                let word = dialoguer::Input::new()
-                    .with_prompt("Please enter the word you want to play")
-                    .validate_with(|s: &String| {
-                        if s.len() != N {
-                            return Err(format!("The word must be {} letters long", N));
-                        }
-                        if !s.is_ascii() {
-                            return Err(String::from("The word must be in ASCII"));
-                        }
-                        Ok(())
-                    })
-                    .interact_text()?;
+    let word = dialoguer::Input::new()
+        .with_prompt("Please enter the word you want to play")
+        .validate_with(|s: &String| {
+            if s.len() != N {
+                return Err(format!("The word must be {} letters long", N));
+            }
+            if !s.is_ascii() {
+                return Err(String::from("The word must be in ASCII"));
+            }
+            Ok(())
+        })
+        .interact_text()?;
 
     Ok((test_word(&word, wordle)
         || dialoguer::Confirm::new()
-                        .with_prompt(format!(
-                            concat!(
-                                "The selected word '{}' does not match the currenct constraints. ",
-                                "Do you want to play in anyway?"
-                            ),
-                            word
-                        ))
-                        .default(false)
+            .with_prompt(format!(
+                concat!(
+                    "The selected word '{}' does not match the currenct constraints. ",
+                    "Do you want to play in anyway?"
+                ),
+                word
+            ))
+            .default(false)
             .interact()?)
     .then(|| word.into_bytes()))
 }
