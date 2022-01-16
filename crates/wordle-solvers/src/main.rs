@@ -36,7 +36,7 @@ use eyre::{Result, WrapErr};
 use fst::{Automaton, IntoStreamer, Map, Streamer};
 use std::{
     cmp::Reverse,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -94,12 +94,7 @@ fn main() -> Result<()> {
 }
 
 fn run<const N: usize>(opts: &Opts) -> Result<()> {
-    let words = load_word_list::<N>(
-        &opts.word_list,
-        opts.block_list.as_deref(),
-        opts.sort,
-        opts.penalty.0,
-    )?;
+    let words = load_word_list::<N>(&opts.word_list, opts.block_list.as_deref(), opts.sort)?;
     let fsts = build_fst(words)?;
     loop {
         let solution = solve::<N>(&fsts)?;
@@ -138,27 +133,9 @@ struct Opts {
     word_list: PathBuf,
     block_list: Option<PathBuf>,
     sort: bool,
-    penalty: Penalty,
     size: Size,
     #[cfg(feature = "generate")]
     generate: bool,
-}
-
-#[derive(Debug)]
-struct Penalty(f64);
-
-impl FromStr for Penalty {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<f64>().map_err(|e| e.to_string()).and_then(|f| {
-            if (0.0..=1.0).contains(&f) {
-                Ok(Self(1.0 - f))
-            } else {
-                Err(String::from("The value must be in [0..1]"))
-            }
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -222,25 +199,6 @@ fn parse_opts() -> Opts {
                 .long("sort"),
         )
         .arg(
-            Arg::new("penalty")
-                .help("Penalty for words with duplicated letters")
-                .validator(str::parse::<Penalty>)
-                .long_help(concat!(
-                    "Penalty for a waord having duplicated letters. ",
-                    "The default behavior is prioritize words that have no repeated characters and ",
-                    "only onclude the other words if their letters are quite frequent. ",
-                    "This flag controls how much penalty a score gets. ",
-                    "The penalty must be between 0 and 1, inclusive.",
-                    "A penalty of 0 means no penalty, score the same as other words.",
-                    "A penalty of 1 means to only show words with duplicates after all other results.",
-                ))
-                .short('p')
-                .long("penalty")
-                .takes_value(true)
-                .required(false)
-                .default_value("0.5"),
-        )
-        .arg(
             Arg::new("size")
                 .help("word size")
                 .short('s')
@@ -264,14 +222,12 @@ fn parse_opts() -> Opts {
     let word_list = PathBuf::from(matches.value_of_os("word-list").unwrap());
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
     let sort = matches.is_present("sort");
-    let penalty = matches.value_of_t("penalty").unwrap();
     let size = matches.value_of_t("size").unwrap();
 
     Opts {
         word_list,
         block_list,
         sort,
-        penalty,
         size,
         #[cfg(feature = "generate")]
         generate: matches.is_present("generate"),
@@ -282,7 +238,6 @@ fn load_word_list<const N: usize>(
     file: &Path,
     block_list: Option<&Path>,
     sort: bool,
-    penalty: f64,
 ) -> Result<Vec<(String, u64)>> {
     let lines = BufReader::new(
         File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
@@ -305,7 +260,6 @@ fn load_word_list<const N: usize>(
         lines.lines().map_while(Result::ok),
         &block_list.unwrap_or_default(),
         sort,
-        penalty,
     ))
 }
 
@@ -313,7 +267,6 @@ fn clean_word_list<I, const N: usize>(
     words: I,
     block_list: &HashSet<String>,
     sort: bool,
-    penalty: f64,
 ) -> Vec<(String, u64)>
 where
     I: IntoIterator,
@@ -323,30 +276,22 @@ where
         (word.len() == N || word.len() == N - 1) && word.bytes().all(|b| matches!(b, b'a'..=b'z'))
     }
 
-    fn has_duplicate_letters(word: &str) -> bool {
-        let mut word = word.as_bytes();
-        while let Some((head, tail)) = word.split_first() {
-            if tail.contains(head) {
-                return true;
-            }
-            word = tail;
-        }
-        false
-    }
+    const EMPTY_FREQ: [u32; 26] = [0; 26];
 
     let mut possible_words = Vec::with_capacity(1024);
     let mut possible_stems = HashSet::with_capacity(1024);
     let mut possible_plurals = HashSet::with_capacity(1024);
-    let mut letter_frequency = HashMap::<u8, u64>::with_capacity(32);
+    let mut letter_frequency = EMPTY_FREQ;
 
     for word in words {
         let word_ref = word.as_ref();
 
-        // build frequency table
+        // build frequency table of all letters, ignoring their position
         if word_ref.is_ascii() {
             // maps uppercase to lowercase, ignore non alphabetic chars
             for byte in word_ref.bytes().filter_map(Letter::try_new).map(u8::from) {
-                *letter_frequency.entry(byte).or_default() += 1;
+                let idx = (byte - b'a') as usize;
+                letter_frequency[idx] += 1;
             }
         }
 
@@ -364,34 +309,33 @@ where
         }
     }
 
-    let is_singular = move |(idx, word): (usize, String)| {
-        (!(possible_plurals.contains(&idx) && possible_stems.contains(&word[..N - 1])))
-            .then(|| word)
-    };
+    let mut words = Vec::with_capacity(possible_words.len());
 
-    let score = move |s: &str| -> u64 {
-        s.bytes()
-            .map(|b| letter_frequency.get(&b).copied().unwrap_or_default())
-            .sum()
-    };
+    // build frequency table of letters at their respective position
+    let mut letter_pos_frequency = [EMPTY_FREQ; N];
 
-    let mut words = possible_words
+    for (idx, word) in possible_words.into_iter().enumerate() {
+        if possible_plurals.contains(&idx) && possible_stems.contains(&word[..N - 1]) {
+            continue;
+        }
+        for (pos, byte) in word.bytes().enumerate() {
+            let idx = (byte - b'a') as usize;
+            letter_pos_frequency[pos][idx] += 1;
+        }
+
+        words.push(word);
+    }
+
+    let mut words = words
         .into_iter()
-        .enumerate()
-        .filter_map(is_singular)
         .map(|word| {
-            let mut score = score(&word);
-            if has_duplicate_letters(&word) {
-                // score and penalty are both bound in a way that will not run into those issues
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_precision_loss,
-                    clippy::cast_sign_loss
-                )]
-                let new_score = ((score as f64) * penalty) as u64;
-                score = new_score;
+            let mut freq = [0; 26];
+            for (pos, b) in word.bytes().enumerate() {
+                let idx = (b - b'a') as usize;
+                // no adding, duplicate letters should not contribute multiple times
+                freq[idx] = letter_pos_frequency[pos][idx].saturating_add(letter_frequency[idx]);
             }
-            (word, score)
+            (word, freq.into_iter().map(u64::from).sum())
         })
         .collect::<Vec<_>>();
 
