@@ -43,7 +43,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use wordle_automaton::{Guess, Letter, Wordle, WordleBuilder};
+use wordle_automaton::{Guess, Wordle, WordleBuilder};
 
 mod words;
 
@@ -181,7 +181,7 @@ fn parse_opts() -> Opts {
                     "The word list to use. ",
                     "The list must contain one word per line. ",
                     "Invalid guesses (non-ascii, or non-five-letter words) are allowed ",
-                    "and will we used to build a frequency table. ",
+                    "but will be ignored. ",
                     "The list must be sorted unless --sort is given. ",
                     "There are three special values accepted: - reads from stdin, ",
                     "@wordle uses all the words that the game accepts, ",
@@ -308,24 +308,12 @@ where
         (word.len() == N || word.len() == N - 1) && word.bytes().all(|b| matches!(b, b'a'..=b'z'))
     }
 
-    const EMPTY_FREQ: [u32; 26] = [0; 26];
-
     let mut possible_words = Vec::with_capacity(1024);
     let mut possible_stems = HashSet::with_capacity(1024);
     let mut possible_plurals = HashSet::with_capacity(1024);
-    let mut letter_frequency = EMPTY_FREQ;
 
     for word in words {
         let word_ref = word.as_ref();
-
-        // build frequency table of all letters, ignoring their position
-        if word_ref.is_ascii() {
-            // maps uppercase to lowercase, ignore non alphabetic chars
-            for byte in word_ref.bytes().filter_map(Letter::try_new).map(u8::from) {
-                let idx = (byte - b'a') as usize;
-                letter_frequency[idx] += 1;
-            }
-        }
 
         if valid_word::<N>(word_ref) && !block_list.contains(word_ref) {
             let word: String = word.into();
@@ -344,7 +332,7 @@ where
     let mut words = Vec::with_capacity(possible_words.len());
 
     // build frequency table of letters at their respective position
-    let mut letter_pos_frequency = [EMPTY_FREQ; N];
+    let mut letter_pos_frequency = [[0_u32; 26]; N];
 
     for (idx, word) in possible_words.into_iter().enumerate() {
         if possible_plurals.contains(&idx) && possible_stems.contains(&word[..N - 1]) {
@@ -365,7 +353,7 @@ where
             for (pos, b) in word.bytes().enumerate() {
                 let idx = (b - b'a') as usize;
                 // no adding, duplicate letters should not contribute multiple times
-                freq[idx] = letter_pos_frequency[pos][idx].saturating_add(letter_frequency[idx]);
+                freq[idx] = letter_pos_frequency[pos][idx];
             }
             (word, freq.into_iter().map(u64::from).sum())
         })
