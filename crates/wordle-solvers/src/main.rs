@@ -37,6 +37,7 @@ use fst::{Automaton, IntoStreamer, Map, Streamer};
 use std::{
     cmp::Reverse,
     collections::HashSet,
+    ffi::OsStr,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -44,34 +45,12 @@ use std::{
 };
 use wordle_automaton::{Guess, Letter, Wordle, WordleBuilder};
 
-#[cfg(feature = "generate")]
 mod words;
 
 const MAX_SIZE: usize = 16;
 
 fn main() -> Result<()> {
     let opts = parse_opts();
-
-    #[cfg(feature = "generate")]
-    {
-        use std::io::{BufWriter, Write};
-        if opts.generate {
-            let file = File::options()
-                .create_new(true)
-                .write(true)
-                .open(opts.word_list)?;
-            let mut writer = BufWriter::new(file);
-
-            let words = words::word_list();
-            for word in words {
-                writer.write_all(word.as_bytes())?;
-                writer.write_all(b"\n")?;
-            }
-
-            return Ok(());
-        }
-    }
-
     match opts.size.0 {
         1 => run::<1>(&opts),
         2 => run::<2>(&opts),
@@ -130,12 +109,10 @@ fn run<const N: usize>(opts: &Opts) -> Result<()> {
 
 #[derive(Debug)]
 struct Opts {
-    word_list: PathBuf,
+    word_list: WordList,
     block_list: Option<PathBuf>,
     sort: bool,
     size: Size,
-    #[cfg(feature = "generate")]
-    generate: bool,
 }
 
 #[derive(Debug)]
@@ -155,8 +132,42 @@ impl FromStr for Size {
     }
 }
 
+#[derive(Debug)]
+enum WordList {
+    Read(PathBuf),
+    Stdin,
+    Wordle,
+    Solutions,
+}
+
+impl WordList {
+    fn from_os(s: &OsStr) -> Result<Self, String> {
+        if s.eq_ignore_ascii_case("-") {
+            return Ok(Self::Stdin);
+        }
+        if s.eq_ignore_ascii_case("@wordle") {
+            return Ok(Self::Wordle);
+        }
+        if s.eq_ignore_ascii_case("@solutions") {
+            return Ok(Self::Solutions);
+        }
+        let path = Path::new(s);
+        let file_name = || s.to_string_lossy();
+        match path.metadata() {
+            Ok(md) => {
+                if md.is_file() {
+                    Ok(Self::Read(path.to_path_buf()))
+                } else {
+                    Err(format!("File '{}' is not a file", file_name()))
+                }
+            }
+            Err(e) => Err(format!("File '{}' is not accessible: {e}", file_name())),
+        }
+    }
+}
+
 fn parse_opts() -> Opts {
-    let app = App::new(env!("CARGO_PKG_NAME"))
+    let matches = App::new(env!("CARGO_PKG_NAME"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .version(env!("CARGO_PKG_VERSION"))
         .long_about(None)
@@ -171,9 +182,13 @@ fn parse_opts() -> Opts {
                     "The list must contain one word per line. ",
                     "Invalid guesses (non-ascii, or non-five-letter words) are allowed ",
                     "and will we used to build a frequency table. ",
-                    "The list must be sorted unless --sort is given."
+                    "The list must be sorted unless --sort is given. ",
+                    "There are three special values accepted: - reads from stdin, ",
+                    "@wordle uses all the words that the game accepts, ",
+                    "@solutions uses all accepted solutions."
                 ))
                 .allow_invalid_utf8(true)
+                .validator_os(WordList::from_os)
                 .default_value("/usr/share/dict/words"),
         ).arg(
             Arg::new("block-list")
@@ -205,21 +220,9 @@ fn parse_opts() -> Opts {
                 .long("size")
                 .validator(str::parse::<usize>) // todo: limit size
                 .default_value("5"),
-        );
+        ).get_matches();
 
-    let matches = {
-        #[cfg(feature = "generate")]
-        {
-            app.arg(Arg::new("generate").long("generate")).get_matches()
-        }
-
-        #[cfg(not(feature = "generate"))]
-        {
-            app.get_matches()
-        }
-    };
-
-    let word_list = PathBuf::from(matches.value_of_os("word-list").unwrap());
+    let word_list = WordList::from_os(matches.value_of_os("word-list").unwrap()).unwrap();
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
     let sort = matches.is_present("sort");
     let size = matches.value_of_t("size").unwrap();
@@ -229,25 +232,54 @@ fn parse_opts() -> Opts {
         block_list,
         sort,
         size,
-        #[cfg(feature = "generate")]
-        generate: matches.is_present("generate"),
     }
 }
 
 fn load_word_list<const N: usize>(
-    file: &Path,
+    file: &WordList,
     block_list: Option<&Path>,
     sort: bool,
 ) -> Result<Vec<(String, u64)>> {
-    let lines = BufReader::new(
-        File::open(file).wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
-    );
+    match file {
+        WordList::Read(file) => {
+            let lines = BufReader::new(
+                File::open(file)
+                    .wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
+            );
+            let lines = lines.lines().map_while(Result::ok);
+            load_words::<_, N>(lines, block_list, sort)
+        }
+        WordList::Stdin => {
+            let stdin = std::io::stdin();
+            let lock = stdin.lock();
+            let lines = lock.lines().map_while(Result::ok);
+            load_words::<_, N>(lines, block_list, sort)
+        }
+        WordList::Wordle => {
+            let words = words::word_list(false);
+            load_words::<_, N>(words, block_list, true)
+        }
+        WordList::Solutions => {
+            let words = words::word_list(true);
+            load_words::<_, N>(words, block_list, true)
+        }
+    }
+}
 
+fn load_words<I, const N: usize>(
+    words: I,
+    block_list: Option<&Path>,
+    sort: bool,
+) -> Result<Vec<(String, u64)>>
+where
+    I: IntoIterator,
+    I::Item: Into<String> + AsRef<str>,
+{
     let block_list = block_list
         .map(|file| {
             BufReader::new(
                 File::open(file)
-                    .wrap_err_with(|| format!("The file '{}' is missing.", file.display()))?,
+                    .wrap_err_with(|| format!("The file '{}' is not readable.", file.display()))?,
             )
             .lines()
             .map(|l| l.map_err(eyre::Report::from))
@@ -257,7 +289,7 @@ fn load_word_list<const N: usize>(
         .wrap_err("The block list could not be read.")?;
 
     Ok(clean_word_list::<_, N>(
-        lines.lines().map_while(Result::ok),
+        words,
         &block_list.unwrap_or_default(),
         sort,
     ))
@@ -340,7 +372,7 @@ where
         .collect::<Vec<_>>();
 
     if sort {
-        words.sort_by(|(l, _), (r, _)| l.cmp(r));
+        words.sort_unstable_by(|(l, _), (r, _)| l.cmp(r));
     }
 
     words
