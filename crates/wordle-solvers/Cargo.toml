@@ -18,4 +18,4 @@ clap = { version = "3.0.6", default-features = false, features = ["std"] }
 eyre = { version = "0.6.5", default-features = false }
 dialoguer = { version = "0.9.0", default-features = false }
 fst = "0.4.7"
-wordle-automaton = { path = "../wordle-automaton", version = "^0.6.0"}
+wordle-automaton = { path = "../wordle-automaton", version = "^0.7.0"}
