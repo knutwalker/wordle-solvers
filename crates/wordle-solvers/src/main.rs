@@ -52,21 +52,37 @@ const MAX_SIZE: usize = 16;
 fn main() -> Result<()> {
     let opts = parse_opts();
     match opts.size.0 {
+        #[cfg(wordle_size = "1")]
         1 => run::<1>(&opts),
+        #[cfg(wordle_size = "2")]
         2 => run::<2>(&opts),
+        #[cfg(wordle_size = "3")]
         3 => run::<3>(&opts),
+        #[cfg(wordle_size = "4")]
         4 => run::<4>(&opts),
+        #[cfg(wordle_size = "5")]
         5 => run::<5>(&opts),
+        #[cfg(wordle_size = "6")]
         6 => run::<6>(&opts),
+        #[cfg(wordle_size = "7")]
         7 => run::<7>(&opts),
+        #[cfg(wordle_size = "8")]
         8 => run::<8>(&opts),
+        #[cfg(wordle_size = "9")]
         9 => run::<9>(&opts),
+        #[cfg(wordle_size = "10")]
         10 => run::<10>(&opts),
+        #[cfg(wordle_size = "11")]
         11 => run::<11>(&opts),
+        #[cfg(wordle_size = "12")]
         12 => run::<12>(&opts),
+        #[cfg(wordle_size = "13")]
         13 => run::<13>(&opts),
+        #[cfg(wordle_size = "14")]
         14 => run::<14>(&opts),
+        #[cfg(wordle_size = "15")]
         15 => run::<15>(&opts),
+        #[cfg(wordle_size = "16")]
         16 => run::<16>(&opts),
         otherwise => panic!("Unsupported size: {}", otherwise),
     }
@@ -218,7 +234,7 @@ fn parse_opts() -> Opts {
                 .help("word size")
                 .short('s')
                 .long("size")
-                .validator(str::parse::<usize>) // todo: limit size
+                .validator(str::parse::<Size>)
                 .default_value("5"),
         ).get_matches();
 
