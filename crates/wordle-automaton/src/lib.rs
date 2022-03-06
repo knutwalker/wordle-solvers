@@ -339,7 +339,14 @@ impl<const N: usize> WordleBuilder<N> {
 
         // if we signal something as 'never' but it's also green or yellow somewhere, we must
         // remove it from 'never' as we would otherwise not find a match
-        let mut never = wordle.never;
+        let mut never = wordle
+            .eventually
+            .iter()
+            .fold(wordle.never, |n, l| n.remove(*l));
+
+        // we also keep the orignal never around to pass it to all undecided constraints
+        let global_never = never;
+
         // we also collect a set of all letters that are already solved
         let mut solved = LetterSet::new();
 
@@ -350,7 +357,7 @@ impl<const N: usize> WordleBuilder<N> {
                 // add all global nevers to the prohibited set of this constraint
                 // we need to do this _after_ the previous step
                 // otherwise we would always remove all never letters
-                *cons = cons.must_not_all(wordle.never);
+                *cons = cons.must_not_all(global_never);
             } else {
                 never = never.remove(cons.must_letter());
                 solved = solved.add(cons.must_letter());
@@ -583,6 +590,24 @@ mod tests {
         // still yield a solution
 
         test_fst(wordle, ["abcde", "abcee"], &["abcde"]);
+    }
+
+    #[test]
+    fn test_guess_with_repeated_correct_letters_in_wrong_pos() {
+        // word is abcde, guess was acebb
+        let wordle = WordleBuilder::new()
+            .correct_pos(0, b'a')
+            .wrong_pos(1, b'c')
+            .wrong_pos(2, b'e')
+            .wrong_pos(3, b'b')
+            .never(b'b')
+            .build();
+
+        // the b in 4th position is different from the b in last position
+        // disallowing any b while another b is known to be valid eventually should
+        // still yield a solution
+
+        test_fst(wordle, ["abcde", "acebb"], &["abcde"]);
     }
 
     fn test_fst<'a>(
