@@ -31,7 +31,7 @@
     while_true
 )]
 
-use clap::{App, Arg};
+use clap::{Arg, Command};
 use eyre::{Result, WrapErr};
 use fst::{Automaton, IntoStreamer, Map, Streamer};
 use std::{
@@ -183,7 +183,7 @@ impl WordList {
 }
 
 fn parse_opts() -> Opts {
-    let matches = App::new(env!("CARGO_PKG_NAME"))
+    let matches = Command::new(env!("CARGO_PKG_NAME"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .version(env!("CARGO_PKG_VERSION"))
         .long_about(None)
