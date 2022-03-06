@@ -43,7 +43,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
-use wordle_automaton::{Guess, Wordle, WordleBuilder};
+use wordle_automaton::{prepare, Guess, Wordle, WordleBuilder};
 
 mod words;
 
@@ -320,70 +320,15 @@ where
     I: IntoIterator,
     I::Item: Into<String> + AsRef<str>,
 {
-    fn valid_word<const N: usize>(word: &str) -> bool {
-        (word.len() == N || word.len() == N - 1) && word.bytes().all(|b| matches!(b, b'a'..=b'z'))
-    }
-
-    let mut possible_words = Vec::with_capacity(1024);
-    let mut possible_stems = HashSet::with_capacity(1024);
-    let mut possible_plurals = HashSet::with_capacity(1024);
-
-    for word in words {
-        let word_ref = word.as_ref();
-
-        if valid_word::<N>(word_ref) && !block_list.contains(word_ref) {
-            let word: String = word.into();
-            if word.len() == N - 1 {
-                let _ = possible_stems.insert(word);
-            } else {
-                let idx = possible_words.len();
-                if word.ends_with('s') {
-                    let _ = possible_plurals.insert(idx);
-                }
-                possible_words.push(word);
-            }
-        }
-    }
-
-    let mut words = Vec::with_capacity(possible_words.len());
-
-    // build frequency table of letters at their respective position
-    let mut letter_pos_frequency = [[0_u32; 26]; N];
-
-    for (idx, word) in possible_words.into_iter().enumerate() {
-        if possible_plurals.contains(&idx) && possible_stems.contains(&word[..N - 1]) {
-            continue;
-        }
-        for (pos, byte) in word.bytes().enumerate() {
-            let idx = (byte - b'a') as usize;
-            letter_pos_frequency[pos][idx] += 1;
-        }
-
-        words.push(word);
-    }
-
-    let mut words = words
-        .into_iter()
-        .map(|word| {
-            let mut freq = [0; 26];
-            for (pos, b) in word.bytes().enumerate() {
-                let idx = (b - b'a') as usize;
-                // no adding, duplicate letters should not contribute multiple times
-                freq[idx] = letter_pos_frequency[pos][idx];
-            }
-            (word, freq.into_iter().map(u64::from).sum())
-        })
-        .collect::<Vec<_>>();
-
+    let mut words = prepare::clean_word_list::<_, _, N>(words, |w| block_list.contains(w));
     if sort {
-        words.sort_unstable_by(|(l, _), (r, _)| l.cmp(r));
+        words.sort_unstable();
     }
-
-    words
+    prepare::score_word_list::<_, N>(words).collect()
 }
 
 fn build_fst(words: Vec<(String, u64)>) -> Result<Map<Vec<u8>>> {
-    Map::from_iter(words).wrap_err("The input file must be sorted. Try adding --sort.")
+    prepare::build_fst(words).wrap_err("The input file must be sorted. Try adding --sort.")
 }
 
 enum Solution<const N: usize> {

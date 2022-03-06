@@ -119,6 +119,7 @@ assert_eq!(solution.decode_str(), String::from("party"));
 use fst::Automaton;
 use std::num::NonZeroUsize;
 
+pub mod prepare;
 mod types;
 
 pub use types::{Constraint, Letter, LetterList, LetterSet};
