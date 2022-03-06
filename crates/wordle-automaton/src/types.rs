@@ -100,6 +100,20 @@ impl LetterSet {
     pub const fn remove_all(self, rhs: Self) -> Self {
         Self(self.0 & !rhs.0)
     }
+
+    /// Returns an iterator over all letters in this set
+    pub fn iter(self) -> impl Iterator<Item = u8> {
+        (b'a'..=b'z')
+            .map(Letter::new)
+            .filter(move |l| self.contains(*l))
+            .map(Letter::into_byte)
+    }
+}
+
+impl ToString for LetterSet {
+    fn to_string(&self) -> String {
+        self.iter().map(char::from).collect()
+    }
 }
 
 /// A list of letters
