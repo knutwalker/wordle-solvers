@@ -31,7 +31,10 @@
     while_true
 )]
 
-use clap::{Arg, Command};
+use clap::{
+    builder::{OsStringValueParser, TypedValueParser, ValueParser},
+    Arg, ArgAction, Command,
+};
 use eyre::{Result, WrapErr};
 use fst::{Automaton, IntoStreamer, Map, Streamer};
 use std::{
@@ -137,7 +140,7 @@ struct Opts {
     reverse: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Size(usize);
 
 impl FromStr for Size {
@@ -154,7 +157,7 @@ impl FromStr for Size {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum WordList {
     Read(PathBuf),
     Stdin,
@@ -189,13 +192,12 @@ impl WordList {
 }
 
 fn parse_opts() -> Opts {
-    let matches = Command::new(env!("CARGO_PKG_NAME"))
+    let mut matches = Command::new(env!("CARGO_PKG_NAME"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .version(env!("CARGO_PKG_VERSION"))
-        .long_about(None)
         .arg(
             Arg::new("word-list")
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .value_name("WORD_LIST")
                 .required(false)
                 .help("The word list to use")
@@ -209,12 +211,11 @@ fn parse_opts() -> Opts {
                     "@wordle uses all the words that the game accepts, ",
                     "@solutions uses all accepted solutions."
                 ))
-                .allow_invalid_utf8(true)
-                .validator_os(WordList::from_os)
+                .value_parser(OsStringValueParser::new().try_map(|s| WordList::from_os(&s)))
                 .default_value("/usr/share/dict/words"),
         ).arg(
             Arg::new("block-list")
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .value_name("BLOCK_LIST")
                 .required(false)
                 .help("A list of block words that are known to not be accepted. Must be one word per line, only lowercase.")
@@ -227,35 +228,38 @@ fn parse_opts() -> Opts {
                 ))
                 .short('b')
                 .long("block-list")
-                .allow_invalid_utf8(true),
+                .value_parser(ValueParser::path_buf()),
         )
         .arg(
             Arg::new("sort")
+                .action(ArgAction::SetTrue)
                 .help("Make sure that the input list is sorted")
                 .short('c')
                 .long("sort"),
         )
         .arg(
             Arg::new("size")
+                .action(ArgAction::Set)
                 .help("word size")
                 .short('s')
                 .long("size")
-                .validator(str::parse::<Size>)
+                .value_parser(str::parse::<Size>)
                 .default_value("5"),
         )
         .arg(
             Arg::new("reverse")
+                .action(ArgAction::SetTrue)
                 .help("Return the worst possible guess")
                 .short('r')
                 .long("reverse"),
         )
         .get_matches();
 
-    let word_list = WordList::from_os(matches.value_of_os("word-list").unwrap()).unwrap();
-    let block_list = matches.value_of_os("block-list").map(PathBuf::from);
-    let sort = matches.is_present("sort");
-    let size = matches.value_of_t("size").unwrap();
-    let reverse = matches.is_present("reverse");
+    let word_list = matches.remove_one("word-list").unwrap();
+    let block_list = matches.remove_one("block-list");
+    let sort = matches.get_flag("sort");
+    let size = matches.remove_one("size").unwrap();
+    let reverse = matches.get_flag("reverse");
 
     Opts {
         word_list,
