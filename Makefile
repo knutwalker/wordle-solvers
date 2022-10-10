@@ -48,8 +48,9 @@ target/debug/$(APP): .cargoinstalled Cargo.toml Cargo.lock $(shell find . \( -pa
 target/release/$(APP): .cargoinstalled Cargo.toml Cargo.lock $(shell find . \( -path './src*' -or -path './crates*' \) -type f)
 > RUSTFLAGS="-C link-arg=-s -C opt-level=3 -C target-cpu=native --emit=asm" cargo build $(CARGOFLAGS) --package $(APP) --release
 
-$(DESTDIR)$(PREFIX)/bin/$(APP): target/release/$(APP)
-> install -m755 -- target/release/$(APP) "$(DESTDIR)$(PREFIX)/bin/"
+$(DESTDIR)$(PREFIX)/bin/$(APP): .cargoinstalled Cargo.toml Cargo.lock $(shell find . \( -path './src*' -or -path './crates*' \) -type f)
+> executable=$$(RUSTFLAGS="-C link-arg=-s -C opt-level=3 -C target-cpu=native --emit=asm" cargo build $(CARGOFLAGS) --package $(APP) --release --message-format=json | jq -r -s 'map(select(.reason == "compiler-artifact" and (.target.kind[] | contains("bin")) and (.package_id | startswith("wordle-solvers")))) | last | .executable')
+> install -m755 -- $$executable "$(DESTDIR)$(PREFIX)/bin/"
 
 .cargoinstalled:
 > @if ! command -v cargo 2> /dev/null

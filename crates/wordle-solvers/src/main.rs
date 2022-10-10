@@ -37,6 +37,7 @@ use fst::{Automaton, IntoStreamer, Map, Streamer};
 use std::{
     cmp::Reverse,
     collections::HashSet,
+    convert::identity,
     ffi::OsStr,
     fs::File,
     io::{BufRead, BufReader},
@@ -92,7 +93,11 @@ fn run<const N: usize>(opts: &Opts) -> Result<()> {
     let words = load_word_list::<N>(&opts.word_list, opts.block_list.as_deref(), opts.sort)?;
     let fsts = build_fst(words)?;
     loop {
-        let solution = solve::<N>(&fsts)?;
+        let solution = if opts.reverse {
+            solve::<N, _, _>(&fsts, identity)
+        } else {
+            solve::<N, _, _>(&fsts, Reverse)
+        }?;
         match solution {
             Solution::Solved(mut solution, guesses) => {
                 solution.make_ascii_uppercase();
@@ -129,6 +134,7 @@ struct Opts {
     block_list: Option<PathBuf>,
     sort: bool,
     size: Size,
+    reverse: bool,
 }
 
 #[derive(Debug)]
@@ -236,18 +242,27 @@ fn parse_opts() -> Opts {
                 .long("size")
                 .validator(str::parse::<Size>)
                 .default_value("5"),
-        ).get_matches();
+        )
+        .arg(
+            Arg::new("reverse")
+                .help("Return the worst possible guess")
+                .short('r')
+                .long("reverse"),
+        )
+        .get_matches();
 
     let word_list = WordList::from_os(matches.value_of_os("word-list").unwrap()).unwrap();
     let block_list = matches.value_of_os("block-list").map(PathBuf::from);
     let sort = matches.is_present("sort");
     let size = matches.value_of_t("size").unwrap();
+    let reverse = matches.is_present("reverse");
 
     Opts {
         word_list,
         block_list,
         sort,
         size,
+        reverse,
     }
 }
 
@@ -340,13 +355,17 @@ enum Solution<const N: usize> {
 
 const QUIT: &str = "-- QUIT I don't want to play anymore";
 
-fn solve<const N: usize>(fst: &Map<Vec<u8>>) -> Result<Solution<N>> {
+fn solve<const N: usize, F, K>(fst: &Map<Vec<u8>>, mut order_by: F) -> Result<Solution<N>>
+where
+    F: FnMut(u64) -> K,
+    K: Ord,
+{
     let mut wordle = WordleBuilder::<N>::new().build();
     let mut guesses = Vec::with_capacity(6);
 
     let mut solutions = Vec::with_capacity(fst.len());
     let wordle = loop {
-        let (next_worlde, word) = match guess_next(fst, wordle, &mut solutions)? {
+        let (next_worlde, word) = match guess_next(fst, wordle, &mut solutions, &mut order_by)? {
             Ok(next) => next,
             Err(solution) => return Ok(solution),
         };
@@ -362,12 +381,17 @@ fn solve<const N: usize>(fst: &Map<Vec<u8>>) -> Result<Solution<N>> {
     Ok(Solution::Solved(wordle.decode_str(), guesses))
 }
 
-fn guess_next<const N: usize>(
+fn guess_next<const N: usize, F, K>(
     fst: &Map<Vec<u8>>,
     wordle: Wordle<N>,
     solutions: &mut Vec<(Vec<u8>, u64)>,
-) -> Result<Result<(Wordle<N>, Vec<u8>), Solution<N>>> {
-    if let Some(solution) = find_all_solutions(fst, &wordle, solutions) {
+    order_by: F,
+) -> Result<Result<(Wordle<N>, Vec<u8>), Solution<N>>>
+where
+    F: FnMut(u64) -> K,
+    K: Ord,
+{
+    if let Some(solution) = find_all_solutions(fst, &wordle, solutions, order_by) {
         match solution {
             Ok(word) => return Ok(Ok((mark_as_correct(wordle, &word), word))),
             Err(solution) => return Ok(Err(solution)),
@@ -389,11 +413,16 @@ fn guess_next<const N: usize>(
     Ok(Ok((wordle, word)))
 }
 
-fn find_all_solutions<const N: usize>(
+fn find_all_solutions<const N: usize, F, K>(
     fst: &Map<Vec<u8>>,
     wordle: &Wordle<N>,
     buf: &mut Vec<(Vec<u8>, u64)>,
-) -> Option<Result<Vec<u8>, Solution<N>>> {
+    mut order_by: F,
+) -> Option<Result<Vec<u8>, Solution<N>>>
+where
+    F: FnMut(u64) -> K,
+    K: Ord,
+{
     buf.clear();
 
     let mut stream = fst.search(&wordle).into_stream();
@@ -410,7 +439,7 @@ fn find_all_solutions<const N: usize>(
         return Some(Ok(word));
     }
 
-    buf.sort_by_key(|(_, score)| Reverse(*score));
+    buf.sort_by_key(|(_, score)| order_by(*score));
 
     None
 }
